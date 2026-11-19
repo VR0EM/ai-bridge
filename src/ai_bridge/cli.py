@@ -106,6 +106,11 @@ def cmd_doctor(args) -> None:
     raise SystemExit(doctor.report(results))
 
 
+def cmd_ui(args) -> None:
+    from . import ui
+    ui.serve(open_browser=not args.no_browser, port=args.port)
+
+
 def main() -> None:
     store.ensure_home()
     p = argparse.ArgumentParser(prog="bridge", description="Manage the Claude-Gemini bridge.")
@@ -140,6 +145,10 @@ def main() -> None:
     d.add_argument("--deep", action="store_true", help="also do tiny live calls to Gemini and Claude")
     d.add_argument("--fix", action="store_true", help="repair the bridge's own setup first")
     d.set_defaults(func=cmd_doctor)
+    g = sub.add_parser("ui", help="open the local settings panel in your browser")
+    g.add_argument("--no-browser", action="store_true", help="only print the link")
+    g.add_argument("--port", type=int, default=0, help="fixed port (default: a random free port)")
+    g.set_defaults(func=cmd_ui)
     args = p.parse_args()
     try:
         args.func(args)

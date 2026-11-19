@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ai-bridge</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1d2330; --muted: #677085; --line: #e3e6ec;
+    --accent: #2f6fde; --ok: #1f8a4c; --warn: #b7791f; --fail: #c53b3b; --chip: #eef1f6;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #11141a; --card: #191d25; --text: #e6e9ef; --muted: #8c94a6; --line: #2a303b;
+            --accent: #6d9cff; --ok: #47c47e; --warn: #e2b04a; --fail: #f06a6a; --chip: #232833; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+         background: var(--bg); color: var(--text); }
+  header { display: flex; align-items: center; gap: 16px; padding: 18px 28px;
+           border-bottom: 1px solid var(--line); background: var(--card); position: sticky; top: 0; z-index: 2; }
+  header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  .grow { flex: 1; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 28px 60px; display: grid; gap: 20px;
+         grid-template-columns: 1fr 1fr; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+             margin: 0 0 14px; font-weight: 600; }
+  .wide { grid-column: 1 / -1; }
+  .pill { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+          font-weight: 600; font-size: 13px; background: var(--chip); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .on .dot { background: var(--ok); } .off .dot { background: var(--fail); }
+  button { white-space: nowrap; font: inherit; border: 1px solid var(--line); background: var(--chip); color: var(--text);
+           padding: 7px 14px; border-radius: 7px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--fail); }
+  button:disabled { opacity: .5; cursor: default; }
+  label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
+  label .hint { font-weight: 400; color: var(--muted); }
+  input, select, textarea { width: 100%; font: inherit; color: var(--text); background: var(--bg);
+                            border: 1px solid var(--line); border-radius: 7px; padding: 7px 10px; }
+  textarea { font-family: var(--mono); font-size: 12px; min-height: 120px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .actions { display: flex; gap: 10px; margin-top: 16px; align-items: center; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.err { color: var(--fail); } .msg.good { color: var(--ok); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; color: var(--muted); font-weight: 600; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.task { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .st { font-weight: 600; } .st.done, .st.approved { color: var(--ok); } .st.failed { color: var(--fail); }
+  .st.running, .st.queued { color: var(--accent); } .st.cancelled, .st.rejected { color: var(--muted); }
+  .check { display: grid; grid-template-columns: 48px 1fr; gap: 6px 10px; padding: 6px 0;
+           border-bottom: 1px solid var(--line); font-size: 13px; }
+  .lvl { font-weight: 700; font-size: 11px; text-transform: uppercase; }
+  .lvl.ok { color: var(--ok); } .lvl.warn { color: var(--warn); } .lvl.fail { color: var(--fail); }
+  .fix { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  #log { font-family: var(--mono); font-size: 12px; height: 340px; overflow: auto; background: var(--bg);
+         border: 1px solid var(--line); border-radius: 7px; padding: 10px 12px; white-space: pre-wrap; }
+  .entry { margin-bottom: 8px; }
+  .who { font-weight: 700; } .who.claude { color: #c4703a; } .who.gemini { color: var(--accent); }
+  .who.human { color: var(--ok); }
+  .meta { color: var(--muted); }
+  .filters { display: flex; gap: 10px; margin-bottom: 10px; }
+  .filters input { max-width: 220px; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; } .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>ai-bridge</h1>
+    <div class="sub" id="datadir"></div>
+  </div>
+  <div class="grow"></div>
+  <span class="pill" id="pill"><span class="dot"></span><span id="pilltext">...</span></span>
+  <button id="toggle">...</button>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Settings</h2>
+    <form id="settings" autocomplete="off">
+      <label>Gemini model <span class="hint">used by gemini_ask and jobs</span></label>
+      <select name="gemini_model" id="model"></select>
+      <label>Claude model <span class="hint">used when Gemini asks Claude; empty = Claude Code default</span></label>
+      <select name="claude_model">
+        <option value="">Claude Code default</option>
+        <option value="opus">opus</option>
+        <option value="sonnet">sonnet</option>
+        <option value="haiku">haiku</option>
+      </select>
+      <div class="row">
+        <div><label>Parallel Gemini jobs</label><input type="number" name="max_parallel_jobs"></div>
+        <div><label>Job timeout <span class="hint">minutes</span></label><input type="number" name="job_timeout_min"></div>
+        <div><label>gemini_ask timeout <span class="hint">seconds</span></label><input type="number" name="ask_timeout_s"></div>
+        <div><label>claude_ask timeout <span class="hint">seconds</span></label><input type="number" name="claude_timeout_s"></div>
+        <div><label>claude_ask per hour</label><input type="number" name="claude_asks_per_hour"></div>
+        <div><label>Max call depth <span class="hint">Claude &gt; Gemini &gt; ...</span></label><input type="number" name="max_depth"></div>
+      </div>
+      <label>Danger zone: commands Gemini may never run <span class="hint">one per line</span></label>
+      <textarea name="deny_commands"></textarea>
+      <div class="actions">
+        <button class="primary" type="submit">Save</button>
+        <button type="button" id="reset">Reset to defaults</button>
+        <span class="msg" id="savemsg"></span>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Health</h2>
+    <div id="checks"></div>
+    <div class="actions">
+      <button id="deep">Run live check</button>
+      <span class="msg" id="deepmsg">Does a tiny real call to Gemini and Claude (about 30 seconds).</span>
+    </div>
+  </section>
+
+  <section class="card wide">
+    <h2>Gemini jobs</h2>
+    <table>
+      <thead><tr><th>Id</th><th>Status</th><th>Role</th><th>Task</th><th>Started</th><th></th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </section>
+
+  <section class="card wide">
+    <h2>Conversation log</h2>
+    <div class="filters">
+      <input id="thread" placeholder="Filter by thread">
+      <input id="search" placeholder="Search text">
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
+
+<script>
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+history.replaceState(null, "", "/");  // keep the token out of the address bar
+let lastId = 0, entries = [], current = null;
+
+async function api(path, body) {
+  const opts = { headers: { "X-Bridge-Token": token } };
+  if (body !== undefined) {
+    opts.method = "POST";
+    opts.headers["Content-Type"] = "application/json";
+    opts.body = JSON.stringify(body);
+  }
+  const r = await fetch(path, opts);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function fillSettings(cfg, models) {
+  const f = document.getElementById("settings");
+  const sel = document.getElementById("model");
+  sel.innerHTML = "";
+  const ids = models.map(m => m.id);
+  if (!ids.includes(cfg.gemini_model)) models = [{ id: cfg.gemini_model, name: "(current)" }, ...models];
+  for (const m of models) {
+    const o = el("option", "", `${m.id}  ${m.name ? "· " + m.name : ""}`);
+    o.value = m.id; sel.appendChild(o);
+  }
+  for (const [k, v] of Object.entries(cfg)) {
+    const input = f.elements[k];
+    if (!input) continue;
+    input.value = Array.isArray(v) ? v.join("\n") : v;
+  }
+}
+
+function renderState(s) {
+  current = s;
+  document.getElementById("datadir").textContent = "Data: " + s.data_dir;
+  const pill = document.getElementById("pill");
+  pill.className = "pill " + (s.enabled ? "on" : "off");
+  document.getElementById("pilltext").textContent = s.enabled ? "Bridge is ON" : "Bridge is OFF";
+  const t = document.getElementById("toggle");
+  t.textContent = s.enabled ? "Turn off" : "Turn on";
+  t.className = s.enabled ? "danger" : "primary";
+
+  const checks = document.getElementById("checks");
+  checks.innerHTML = "";
+  for (const [lvl, title, detail, fix] of s.checks) checks.appendChild(checkRow(lvl, title, detail, fix));
+
+  const tbody = document.getElementById("jobs");
+  tbody.innerHTML = "";
+  if (!s.jobs.length) {
+    const tr = el("tr"); const td = el("td", "msg", "No jobs yet."); td.colSpan = 6; tr.appendChild(td); tbody.appendChild(tr);
+  }
+  for (const j of s.jobs) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "", j.id.slice(0, 8)));
+    tr.appendChild(el("td", "st " + j.status, j.status + (j.branch ? " (" + j.branch + ")" : "")));
+    tr.appendChild(el("td", "", j.role));
+    const task = el("td", "task", j.task); task.title = j.task; tr.appendChild(task);
+    tr.appendChild(el("td", "meta", (j.started || j.created || "").replace("T", " ").slice(0, 16)));
+    const td = el("td");
+    if (j.status === "queued" || j.status === "running") {
+      const b = el("button", "danger", "Cancel");
+      b.onclick = async () => { b.disabled = true; await api(`/api/jobs/${j.id}/cancel`, {}); refresh(); };
+      td.appendChild(b);
+    }
+    tr.appendChild(td); tbody.appendChild(tr);
+  }
+}
+
+function checkRow(lvl, title, detail, fix) {
+  const row = el("div", "check");
+  row.appendChild(el("span", "lvl " + lvl, lvl));
+  const body = el("div");
+  body.appendChild(el("div", "", `${title}: ${detail}`));
+  if (lvl !== "ok" && fix) body.appendChild(el("div", "fix", "fix: " + fix));
+  row.appendChild(body);
+  return row;
+}
+
+async function refresh(withSettings) {
+  try {
+    const s = await api("/api/state");
+    renderState(s);
+    if (withSettings) fillSettings(s.config, s.models);
+    if (s.config_error) setMsg("savemsg", s.config_error, "err");
+  } catch (e) { setMsg("savemsg", "Cannot reach the panel: " + e.message, "err"); }
+}
+
+function setMsg(id, text, kind) {
+  const m = document.getElementById(id);
+  m.textContent = text; m.className = "msg " + (kind || "");
+}
+
+async function pollLog() {
+  try {
+    const d = await api("/api/log?since=" + lastId);
+    if (d.entries.length) {
+      entries = entries.concat(d.entries).slice(-1000);
+      lastId = entries[entries.length - 1].id;
+      renderLog(true);
+    }
+  } catch (e) { /* the next poll retries */ }
+}
+
+function renderLog(stick) {
+  const box = document.getElementById("log");
+  const atBottom = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+  const th = document.getElementById("thread").value.trim().toLowerCase();
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  box.innerHTML = "";
+  for (const e of entries) {
+    if (th && (e.thread || "") !== th) continue;
+    if (q && !e.text.toLowerCase().includes(q)) continue;
+    const div = el("div", "entry");
+    div.appendChild(el("span", "meta", `#${e.id} ${e.ts.replace("T", " ").slice(0, 19)} `));
+    div.appendChild(el("span", "who " + e.from, e.from));
+    if (e.thread) div.appendChild(el("span", "meta", ` [${e.thread}]`));
+    div.appendChild(el("span", "", ": " + e.text));
+    box.appendChild(div);
+  }
+  if (!entries.length) box.appendChild(el("div", "meta", "No messages yet."));
+  if (stick && atBottom) box.scrollTop = box.scrollHeight;
+}
+
+document.getElementById("toggle").onclick = async () => {
+  const t = document.getElementById("toggle"); t.disabled = true;
+  try {
+    if (current && current.enabled) {
+      if (!confirm("Turn the bridge off? Running Gemini jobs will be stopped.")) return;
+      await api("/api/off", {});
+    } else {
+      await api("/api/on", {});
+    }
+  } finally { t.disabled = false; refresh(); }
+};
+
+document.getElementById("settings").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const f = ev.target, body = {};
+  for (const k of Object.keys(current.defaults)) {
+    const input = f.elements[k];
+    if (!input) continue;
+    if (k === "deny_commands") body[k] = input.value.split("\n").map(s => s.trim()).filter(Boolean);
+    else if (typeof current.defaults[k] === "number") body[k] = Number(input.value);
+    else body[k] = input.value;
+  }
+  try {
+    await api("/api/config", body);
+    setMsg("savemsg", "Saved. New jobs and calls use these settings right away.", "good");
+    refresh(true);
+  } catch (e) { setMsg("savemsg", e.message, "err"); }
+};
+
+document.getElementById("reset").onclick = async () => {
+  if (!confirm("Reset all settings to the defaults?")) return;
+  await api("/api/config/reset", {});
+  setMsg("savemsg", "Defaults restored.", "good");
+  refresh(true);
+};
+
+document.getElementById("deep").onclick = async () => {
+  const b = document.getElementById("deep"); b.disabled = true;
+  setMsg("deepmsg", "Running... this takes about 30 seconds.");
+  try {
+    const d = await api("/api/doctor/deep", {});
+    const box = document.getElementById("checks");
+    for (const c of d.checks) box.appendChild(checkRow(...c));
+    const bad = d.checks.filter(c => c[0] !== "ok").length;
+    setMsg("deepmsg", bad ? `${bad} live check(s) need attention.` : "Live checks passed.", bad ? "err" : "good");
+  } catch (e) { setMsg("deepmsg", e.message, "err"); }
+  finally { b.disabled = false; }
+};
+
+for (const id of ["thread", "search"]) document.getElementById(id).oninput = () => renderLog(false);
+
+if (!token) {
+  document.body.innerHTML = "<p style='padding:40px'>Open this panel with the link printed by <code>bridge ui</code>.</p>";
+} else {
+  refresh(true); pollLog();
+  setInterval(pollLog, 2000);
+  setInterval(() => refresh(false), 5000);
+}
+</script>
+</body>
+</html>

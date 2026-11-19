@@ -53,5 +53,6 @@ cat <<'MSG'
 
 Next steps:
   1. Restart the Claude desktop app (Cmd+Q) and Antigravity so they load the bridge.
-  2. Run 'bridge doctor --deep' for a live test of Gemini and Claude, and 'bridge --help' for all commands.
+  2. Run 'bridge doctor --deep' for a live test of Gemini and Claude.
+  3. Run 'bridge ui' for the settings panel, or 'bridge --help' for all commands.
 MSG

@@ -14,6 +14,11 @@ args = sys.argv[1:]
 if args[:1] == ["--version"]:
     print("1.5.12")
     sys.exit(0)
+if args[:1] == ["models"]:
+    print("gemini-4-neon-high              Gemini 4 Neon (High)")
+    print("gemini-4-hydrogen-high          Gemini 4 Hydrogen (High)")
+    print("claude-opus-5-5-high            Claude Opus 5.5 (High)")
+    sys.exit(0)
 if args[:1] == ["mcp"]:
     # Minimal `agy mcp add/remove` that edits ~/.gemini/config/mcp_config.json
     path = os.path.join(os.environ["HOME"], ".gemini", "config", "mcp_config.json")
