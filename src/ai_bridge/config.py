@@ -12,6 +12,7 @@ import re
 from . import store
 
 MODEL_RE = re.compile(r"\Agemini-[a-z0-9][a-z0-9._-]{0,60}\Z")
+CLAUDE_MODEL_RE = re.compile(r"\A([a-z][a-z0-9.-]{0,60})?\Z")
 
 DEFAULTS = {
     # Model used by gemini_ask and gemini_task (see: agy models)
@@ -23,6 +24,10 @@ DEFAULTS = {
     # Background jobs (gemini_task)
     "max_parallel_jobs": 3,
     "job_timeout_min": 20,
+    # claude_ask (Gemini asking Claude). Empty model = Claude Code's default.
+    "claude_model": "",
+    "claude_timeout_s": 300,
+    "claude_asks_per_hour": 20,
     # Commands a Gemini job may never run (on top of the network lockdown)
     "deny_commands": [
         "qm", "pct", "pvesh", "pvecm", "pveum", "vzdump",
@@ -36,6 +41,8 @@ RANGES = {
     "max_depth": (1, 5),
     "max_parallel_jobs": (1, 10),
     "job_timeout_min": (1, 240),
+    "claude_timeout_s": (10, 3600),
+    "claude_asks_per_hour": (0, 200),
 }
 
 CONFIG_FILE = store.HOME / "config.json"
@@ -45,6 +52,8 @@ CONFIG_LOCK = store.HOME / "config.lock"
 def validate(cfg: dict) -> dict:
     if not isinstance(cfg.get("gemini_model"), str) or not MODEL_RE.match(cfg["gemini_model"]):
         raise ValueError("config: gemini_model must look like 'gemini-4-neon-high'.")
+    if not isinstance(cfg.get("claude_model"), str) or not CLAUDE_MODEL_RE.match(cfg["claude_model"]):
+        raise ValueError("config: claude_model must be empty or a model name like 'opus' or 'sonnet'.")
     for key, (lo, hi) in RANGES.items():
         v = cfg.get(key)
         if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:

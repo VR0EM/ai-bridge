@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-from . import config, gemini, jobs, store
+from . import claude, config, gemini, jobs, store
 
 AGENT = os.environ.get("AI_BRIDGE_AGENT", "")
 
@@ -46,7 +46,7 @@ def _friendly_errors():
     """Turn expected errors into a readable message for the model."""
     try:
         yield
-    except (store.BridgeOff, ValueError, gemini.GeminiError) as e:
+    except (store.BridgeOff, ValueError, gemini.GeminiError, claude.ClaudeError) as e:
         raise ToolError(str(e)) from None
 
 
@@ -260,6 +260,42 @@ def gemini_cancel(job_id: str) -> str:
         job = jobs.cancel(job_id)
     return jobs.summary_line(job)
 
+
+async def claude_ask(
+    question: str,
+    thread: str = "general",
+    path: str | None = None,
+    new_conversation: bool = False,
+) -> str:
+    """Ask Claude (the orchestrator) for feedback, a review or a second opinion.
+
+    Claude answers in text only; it cannot take actions for you. Optionally
+    give `path` (a normal folder inside the user's home, e.g. a project) so
+    Claude may read files there to answer. The conversation continues per
+    thread; set new_conversation=True to start over. Question and answer are
+    written to the shared log. Use this sparingly: there is an hourly limit.
+    """
+    with _friendly_errors():
+        store.require_on()
+        cfg = config.load()
+        if gemini.current_depth() >= cfg["max_depth"]:
+            raise ValueError(f"Maximum depth ({cfg['max_depth']}) reached: no new call to Claude.")
+        question = gemini.check_prompt(question, "Question")
+        thread = store.check_thread(thread) or "general"
+        await asyncio.to_thread(claude.check_rate, cfg["claude_asks_per_hour"])
+        if new_conversation:
+            await asyncio.to_thread(claude.save_session, thread, None)
+        await asyncio.to_thread(
+            store.append, AGENT, f"{claude.QUESTION_PREFIX} {question}"[: store.MAX_TEXT], thread)
+        result = await claude.ask(question, thread, path, cfg["claude_model"], cfg["claude_timeout_s"])
+        if store.is_enabled():
+            await asyncio.to_thread(store.append, "claude", result["response"][: store.MAX_TEXT], thread)
+    return f"Answer from Claude (thread '{thread}').\n" + untrusted("claude", result["response"])
+
+
+# Gemini can ask Claude for feedback
+if AGENT == "gemini":
+    mcp.tool()(claude_ask)
 
 # The Gemini-calling tools are only available to Claude (the orchestrator)
 if AGENT == "claude":

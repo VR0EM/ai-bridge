@@ -16,6 +16,7 @@ os.environ.pop("AI_BRIDGE_DEPTH", None)
 import pytest  # noqa: E402
 
 FAKE_AGY = Path(__file__).parent / "fake_agy.py"
+FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
 
 
 @pytest.fixture(autouse=True)
@@ -47,3 +48,15 @@ def home_dir():
     (d / "main.py").write_text("print('hello')\n")
     yield d
     shutil.rmtree(d, ignore_errors=True)
+
+
+@pytest.fixture
+def fake_claude(tmp_path, monkeypatch):
+    """Put a fake `claude` first on PATH."""
+    bin_dir = tmp_path / "cbin"
+    bin_dir.mkdir()
+    target = bin_dir / "claude"
+    target.write_text(f"#!{sys.executable}\n" + FAKE_CLAUDE.read_text())
+    target.chmod(target.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    return target

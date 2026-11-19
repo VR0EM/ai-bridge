@@ -36,9 +36,10 @@ def bridge_on():
 
 def test_gemini_does_not_get_the_orchestrator_tools():
     names, _ = run_tools("gemini", [])
-    assert set(names) == {"post_note", "read_notes", "bridge_status"}
+    assert set(names) == {"post_note", "read_notes", "bridge_status", "claude_ask"}
     names, _ = run_tools("claude", [])
     assert {"gemini_ask", "gemini_task", "gemini_jobs", "gemini_result", "gemini_cancel"} <= set(names)
+    assert "claude_ask" not in names
 
 
 def test_notes_are_wrapped_as_untrusted():
@@ -89,3 +90,17 @@ def test_cli_tail_and_note():
     assert "Saved as message #1" in run("note", "hello", "-t", "Demo").stdout
     out = run("tail", "-n", "0", "-t", "DEMO").stdout
     assert "hello" in out
+
+
+def test_gemini_can_ask_claude_over_mcp(fake_claude):
+    _, out = run_tools("gemini", [("claude_ask", {"question": "Is this plan sound?", "thread": "x"})])
+    is_error, text = out[0]
+    assert not is_error and "Claude says: looks fine." in text
+    log = store.read_all()
+    assert log[-2]["from"] == "gemini" and log[-2]["text"].startswith("[question for Claude]")
+    assert log[-1]["from"] == "claude"
+
+
+def test_claude_ask_respects_depth(fake_claude):
+    _, out = run_tools("gemini", [("claude_ask", {"question": "hi"})], {"AI_BRIDGE_DEPTH": "2"})
+    assert out[0][0] and "Maximum depth" in out[0][1]
