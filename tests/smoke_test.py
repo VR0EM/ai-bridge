@@ -1,6 +1,6 @@
-"""Rooktest: start de MCP-server als claude en als gemini en test de tools.
+"""Smoke test: start the MCP server as claude and as gemini and exercise the tools.
 
-Draai met een tijdelijke map, zodat je echte logboek leeg blijft:
+Run with a temporary data dir so your real log stays clean:
     AI_BRIDGE_HOME=$(mktemp -d) uv run python tests/smoke_test.py
 """
 import asyncio
@@ -29,21 +29,21 @@ async def as_agent(agent: str) -> None:
         print(f"[{agent}] tools: {tools}")
         for name, args in [
             ("bridge_status", {}),
-            ("post_note", {"text": f"testbericht van {agent}", "thread": "test"}),
+            ("post_note", {"text": f"test message from {agent}", "thread": "test"}),
             ("read_notes", {}),
         ]:
             r = await c.call_tool(name, args)
             text = " ".join(getattr(x, "text", "") for x in r.content)
-            print(f"[{agent}] {name} -> {'FOUT' if r.is_error else 'ok'}: {text.splitlines()[-1]}")
+            print(f"[{agent}] {name} -> {'ERROR' if r.is_error else 'ok'}: {text.splitlines()[-1]}")
 
 
 async def main() -> None:
-    assert "AI_BRIDGE_HOME" in os.environ, "Zet AI_BRIDGE_HOME naar een tijdelijke map."
+    assert "AI_BRIDGE_HOME" in os.environ, "Set AI_BRIDGE_HOME to a temporary directory."
     bridge("on")
     await as_agent("claude")
     await as_agent("gemini")
     bridge("off")
-    print("--- met de bridge UIT moet dit een FOUT geven:")
+    print("--- with the bridge OFF this must give an ERROR:")
     await as_agent("claude")
 
 

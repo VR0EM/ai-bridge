@@ -1,7 +1,7 @@
-"""Opslag van de bridge: aan/uit-schakelaar en het gedeelde logboek.
+"""Bridge storage: the on/off switch and the shared log.
 
-Alles staat in ~/.ai-bridge (rechten 700, bestanden 600).
-Het logboek is append-only JSONL; schrijven gebeurt onder een bestandslock.
+Everything lives in ~/.ai-bridge (mode 700, files 600), outside the repo.
+The log is append-only JSONL; writes happen under a file lock.
 """
 from __future__ import annotations
 
@@ -17,13 +17,14 @@ ENABLED_FILE = HOME / "enabled"
 LOG_FILE = HOME / "log.jsonl"
 LOCK_FILE = HOME / "log.lock"
 
-AGENTS = {"claude", "gemini", "dali"}
+# "human" is you, writing via the `bridge note` command
+AGENTS = {"claude", "gemini", "human"}
 MAX_TEXT = 4000
 THREAD_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 
 
 class BridgeOff(Exception):
-    """De bridge staat uit."""
+    """The bridge is switched off."""
 
 
 def ensure_home() -> None:
@@ -46,25 +47,25 @@ def set_enabled(on: bool) -> None:
 
 def require_on() -> None:
     if not is_enabled():
-        raise BridgeOff("De bridge staat uit. Dali kan ze aanzetten met: bridge on")
+        raise BridgeOff("The bridge is off. The user can turn it on with: bridge on")
 
 
 def _check_agent(agent: str) -> str:
     if agent not in AGENTS:
-        raise ValueError(f"Onbekende agent: {agent!r}")
+        raise ValueError(f"Unknown agent: {agent!r}")
     return agent
 
 
-def _check_thread(thread: str | None) -> str | None:
+def check_thread(thread: str | None) -> str | None:
     if thread is None or thread == "":
         return None
     thread = thread.strip().lower()
     if not THREAD_RE.match(thread):
-        raise ValueError("Threadnaam: enkel a-z, 0-9, - en _, max 40 tekens.")
+        raise ValueError("Thread name: only a-z, 0-9, - and _, max 40 characters.")
     return thread
 
 
-def _read_all() -> list[dict]:
+def read_all() -> list[dict]:
     if not LOG_FILE.exists():
         return []
     entries = []
@@ -80,19 +81,19 @@ def _read_all() -> list[dict]:
 
 
 def append(agent: str, text: str, thread: str | None = None) -> dict:
-    """Voeg een bericht toe aan het logboek en geef het terug."""
+    """Append a message to the log and return it."""
     ensure_home()
     agent = _check_agent(agent)
-    thread = _check_thread(thread)
+    thread = check_thread(thread)
     text = text.strip()
     if not text:
-        raise ValueError("Leeg bericht.")
+        raise ValueError("Empty message.")
     if len(text) > MAX_TEXT:
-        raise ValueError(f"Bericht te lang ({len(text)} tekens, max {MAX_TEXT}).")
+        raise ValueError(f"Message too long ({len(text)} characters, max {MAX_TEXT}).")
     with LOCK_FILE.open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            entries = _read_all()
+            entries = read_all()
             next_id = (entries[-1]["id"] + 1) if entries else 1
             entry = {
                 "id": next_id,
@@ -132,11 +133,11 @@ def read(
     thread: str | None = None,
     limit: int = 50,
 ) -> list[dict]:
-    """Lees berichten. only_new=True gebruikt en verschuift de cursor van deze agent."""
-    thread = _check_thread(thread)
+    """Read messages. only_new=True uses and advances this agent's cursor."""
+    thread = check_thread(thread)
     limit = max(1, min(limit, 200))
     start = get_cursor(agent) if only_new else max(0, since_id)
-    entries = [e for e in _read_all() if e.get("id", 0) > start]
+    entries = [e for e in read_all() if e.get("id", 0) > start]
     if thread:
         entries = [e for e in entries if e.get("thread") == thread]
     entries = entries[:limit]

@@ -1,7 +1,7 @@
-"""Instellingen van de bridge.
+"""Bridge settings.
 
-Standaardwaarden staan hieronder. Overschrijven kan in ~/.ai-bridge/config.json,
-bijvoorbeeld: {"gemini_model": "gemini-4-hydrogen-high", "ask_timeout_s": 300}
+Defaults live below. Override them in ~/.ai-bridge/config.json, for example:
+{"gemini_model": "gemini-4-hydrogen-high", "ask_timeout_s": 300}
 """
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ import json
 from . import store
 
 DEFAULTS = {
-    # Model voor gemini_ask (zie: agy models)
+    # Model used by gemini_ask (see: agy models)
     "gemini_model": "gemini-4-neon-high",
-    # Maximale duur van een gemini_ask-aanroep in seconden
+    # Max duration of one gemini_ask call, in seconds
     "ask_timeout_s": 240,
-    # Hoe diep agents elkaar mogen aanroepen (Claude -> Gemini -> Claude ...)
+    # How deep agents may call each other (Claude -> Gemini -> Claude ...)
     "max_depth": 2,
 }
 
@@ -30,5 +30,5 @@ def load() -> dict:
     except FileNotFoundError:
         pass
     except json.JSONDecodeError as e:
-        raise ValueError(f"config.json is geen geldige JSON: {e}") from None
+        raise ValueError(f"config.json is not valid JSON: {e}") from None
     return cfg

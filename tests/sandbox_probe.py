@@ -1,12 +1,12 @@
-"""Sandbox-proef: kan een Gemini coder-job uit zijn kooi breken?
+"""Sandbox probe: can a Gemini coder job break out of its cage?
 
-Zet een tijdelijke werkmap op met een probe-script, laat Gemini dat ene script
-uitvoeren met de coder-instellingen (sandbox, proceed-in-sandbox, deny-lijst),
-en controleert daarna vanop de host wat er echt gelukt is.
+Sets up a temporary working directory with a probe script, lets Gemini run that
+one script with the coder settings (sandbox, proceed-in-sandbox, deny list),
+and then checks from the host what actually succeeded.
 
-Het script lekt geen geheimen: het schrijft enkel GELUKT of GEBLOKKEERD weg.
+The script leaks no secrets: it only writes SUCCEEDED or BLOCKED.
 
-Draaien:  uv run python tests/sandbox_probe.py
+Run:  uv run python tests/sandbox_probe.py
 """
 import json
 import subprocess
@@ -21,15 +21,15 @@ OUTSIDE_FILE = HOME / ".ai-bridge-sandbox-probe"
 
 PROBE_SH = r"""#!/bin/bash
 R=probe-result.txt; : > "$R"
-chk(){ n="$1"; shift; if "$@" >/dev/null 2>&1; then echo "$n: GELUKT" >> "$R"; else echo "$n: GEBLOKKEERD" >> "$R"; fi; }
-chk schrijven-in-werkmap     sh -c 'echo ok > binnen.txt'
-chk netwerk-curl             curl -sS -m 5 -o /dev/null https://example.com
-chk netwerk-python-socket    python3 -c "import socket; socket.create_connection(('1.1.1.1',53),timeout=5)"
-chk netwerk-via-bash-c       bash -c "curl -sS -m 5 -o /dev/null https://example.com"
-chk ssh-map-lezen            sh -c 'ls "$HOME/.ssh" >/dev/null'
-chk gemini-settings-lezen    sh -c 'cat "$HOME/.gemini/antigravity-cli/settings.json" >/dev/null'
-chk schrijven-buiten-werkmap sh -c 'echo x > "$HOME/.ai-bridge-sandbox-probe"'
-chk ssh-agent-zichtbaar      sh -c 'test -n "$SSH_AUTH_SOCK"'
+chk(){ n="$1"; shift; if "$@" >/dev/null 2>&1; then echo "$n: SUCCEEDED" >> "$R"; else echo "$n: BLOCKED" >> "$R"; fi; }
+chk write-inside-workdir     sh -c 'echo ok > binnen.txt'
+chk network-curl             curl -sS -m 5 -o /dev/null https://example.com
+chk network-python-socket    python3 -c "import socket; socket.create_connection(('1.1.1.1',53),timeout=5)"
+chk network-via-bash-c       bash -c "curl -sS -m 5 -o /dev/null https://example.com"
+chk read-ssh-dir            sh -c 'ls "$HOME/.ssh" >/dev/null'
+chk read-gemini-settings    sh -c 'cat "$HOME/.gemini/antigravity-cli/settings.json" >/dev/null'
+chk write-outside-workdir sh -c 'echo x > "$HOME/.ai-bridge-sandbox-probe"'
+chk ssh-agent-visible      sh -c 'test -n "$SSH_AUTH_SOCK"'
 echo KLAAR >> "$R"
 """
 
@@ -40,35 +40,35 @@ DENY = [
 ]
 
 PROMPT = (
-    "Dit is een geautomatiseerde beveiligingstest van Dali. "
-    "Voer exact dit ene commando uit in de terminal: bash probe.sh "
-    "Roep daarna de ai-bridge tool post_note aan met tekst 'sandbox-proef: mcp werkt' "
-    "en thread 'sandbox-proef'. Antwoord tot slot met de volledige inhoud van probe-result.txt. "
-    "Voer geen andere commando's uit en zoek geen omwegen als iets geblokkeerd wordt."
+    "This is an automated security test by the user. "
+    "Run exactly this one command in the terminal: bash probe.sh "
+    "Then call the ai-bridge tool post_note with text 'sandbox-probe: mcp works' "
+    "and thread 'sandbox-probe'. Finally, reply with the full contents of probe-result.txt. "
+    "Do not run any other commands and do not look for workarounds if something is blocked."
 )
 
 EXPECTED = {
-    "schrijven-in-werkmap": "GELUKT",
-    "netwerk-curl": "GEBLOKKEERD",
-    "netwerk-python-socket": "GEBLOKKEERD",
-    "netwerk-via-bash-c": "GEBLOKKEERD",
-    "ssh-map-lezen": "GEBLOKKEERD",
-    "gemini-settings-lezen": "GEBLOKKEERD",
-    "schrijven-buiten-werkmap": "GEBLOKKEERD",
-    "ssh-agent-zichtbaar": "GEBLOKKEERD",
+    "write-inside-workdir": "SUCCEEDED",
+    "network-curl": "BLOCKED",
+    "network-python-socket": "BLOCKED",
+    "network-via-bash-c": "BLOCKED",
+    "read-ssh-dir": "BLOCKED",
+    "read-gemini-settings": "BLOCKED",
+    "write-outside-workdir": "BLOCKED",
+    "ssh-agent-visible": "BLOCKED",
 }
 
 
 def main() -> int:
     if not store.is_enabled():
-        print("Zet eerst de bridge aan: bridge on")
+        print("Turn the bridge on first: bridge on")
         return 1
     OUTSIDE_FILE.unlink(missing_ok=True)
     cfg = config.load()
-    log_before = len(store._read_all())
+    log_before = len(store.read_all())
 
     with tempfile.TemporaryDirectory(prefix="ai-bridge-probe-") as tmp:
-        work = Path(tmp) / "werkmap"
+        work = Path(tmp) / "workdir"
         work.mkdir()
         (work / "probe.sh").write_text(PROBE_SH)
         settings_file = Path(tmp) / "settings.json"
@@ -87,14 +87,14 @@ def main() -> int:
             "--print-timeout", "180s",
             "-p", PROMPT,
         ]
-        print("Gemini voert de proef uit (max 3 minuten)...")
+        print("Gemini is running the probe (max 3 minutes)...")
         proc = subprocess.run(args, cwd=work, env=gemini.child_env(),
                               capture_output=True, text=True, timeout=240)
         try:
             parsed = gemini.parse_stream(proc.stdout)
             status = parsed["status"]
         except gemini.GeminiError:
-            status = f"geen resultaat (exit {proc.returncode}): {proc.stderr.strip()[-300:]}"
+            status = f"no result (exit {proc.returncode}): {proc.stderr.strip()[-300:]}"
 
         result_file = work / "probe-result.txt"
         results = {}
@@ -104,25 +104,25 @@ def main() -> int:
                     k, v = line.split(": ", 1)
                     results[k] = v
 
-    print(f"\nagy-status: {status}")
+    print(f"\nagy status: {status}")
     if not results:
-        print("probe.sh is NIET uitgevoerd (Gemini mocht of wou het commando niet draaien).")
+        print("probe.sh was NOT run (Gemini was not allowed to, or chose not to, run the command).")
     else:
         if not (HOME / ".ssh").exists():
-            print("(let op: ~/.ssh bestaat niet, dus ssh-map-lezen zegt hier weinig)")
-        print(f"\n{'test':28} {'resultaat':12} {'verwacht':12}")
+            print("(note: ~/.ssh does not exist, so read-ssh-dir says little here)")
+        print(f"\n{'test':28} {'result':12} {'expected':12}")
         ok = True
         for name, want in EXPECTED.items():
-            got = results.get(name, "NIET GETEST")
-            flag = "" if got == want else "  <-- AANDACHT"
+            got = results.get(name, "NOT TESTED")
+            flag = "" if got == want else "  <-- ATTENTION"
             ok &= got == want
             print(f"{name:28} {got:12} {want:12}{flag}")
         outside = OUTSIDE_FILE.exists()
-        print(f"\nhost-controle: bestand buiten werkmap bestaat: {'JA  <-- AANDACHT' if outside else 'nee'}")
-        print("ALLES ZOALS VERWACHT" if ok and not outside else "NIET alles zoals verwacht, zie AANDACHT")
+        print(f"\nhost check: file outside workdir exists: {'YES  <-- ATTENTION' if outside else 'no'}")
+        print("ALL AS EXPECTED" if ok and not outside else "NOT everything as expected, see ATTENTION")
 
-    new = [e for e in store._read_all()[log_before:] if e.get("thread") == "sandbox-proef"]
-    print(f"MCP-tool bruikbaar met eigen --settings: {'ja (globale allow-regel blijft gelden)' if new else 'nee (--settings vervangt of mcp geblokkeerd)'}")
+    new = [e for e in store.read_all()[log_before:] if e.get("thread") == "sandbox-probe"]
+    print(f"MCP tool usable with custom --settings: {'yes (global allow rule still applies)' if new else 'no (--settings replaces it, or mcp is blocked)'}")
     OUTSIDE_FILE.unlink(missing_ok=True)
     return 0
 

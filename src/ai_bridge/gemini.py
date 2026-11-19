@@ -1,10 +1,10 @@
-"""Gemini aanroepen via de Antigravity CLI (agy), headless.
+"""Calling Gemini through the Antigravity CLI (agy), headless.
 
-- Draait in een eigen lege werkmap per thread onder ~/.ai-bridge/work/ask/.
-- Altijd in plan-modus: Gemini mag lezen en nadenken, niet uitvoeren.
-- Geen toegang tot je SSH-agent (SSH_AUTH_SOCK wordt verwijderd).
-- Per thread wordt de conversation_id bewaard, zodat een gesprek doorloopt.
-- Nooit --dangerously-skip-permissions.
+- Runs in its own empty working directory per thread under ~/.ai-bridge/work/ask/.
+- Always in plan mode: Gemini may read and think, not execute.
+- No access to your SSH agent (SSH_AUTH_SOCK is removed).
+- The conversation_id is stored per thread, so a conversation continues.
+- Never --dangerously-skip-permissions.
 """
 from __future__ import annotations
 
@@ -24,10 +24,10 @@ THREADS_LOCK = store.HOME / "threads.lock"
 FORBIDDEN_FLAGS = {"--dangerously-skip-permissions"}
 
 ASK_PREAMBLE = (
-    "Je wordt bevraagd door Claude, de orchestrator, via de ai-bridge van Dali. "
-    "Dit is een overleg: geef je eigen inzicht, kritiek of alternatieve invalshoek. "
-    "Voer geen acties uit en wijzig geen bestanden. "
-    "Antwoord in de taal van de vraag, beknopt en concreet.\n\n"
+    "You are being consulted by Claude, the orchestrator, through the user's ai-bridge. "
+    "This is a discussion: give your own insight, criticism or alternative angle. "
+    "Do not take actions and do not modify files. "
+    "Answer in the language of the question, concise and concrete.\n\n"
 )
 
 
@@ -42,7 +42,7 @@ def agy_path() -> str:
     fallback = Path.home() / ".local" / "bin" / "agy"
     if fallback.exists():
         return str(fallback)
-    raise GeminiError("agy niet gevonden. Installeer de Antigravity CLI.")
+    raise GeminiError("agy not found. Install the Antigravity CLI.")
 
 
 def current_depth() -> int:
@@ -85,10 +85,10 @@ def build_args(prompt: str, model: str, timeout_s: int, conversation_id: str | N
     ]
     if conversation_id:
         args += ["--conversation", conversation_id]
-    # -p moet als laatste: het neemt het volgende argument als prompt
+    # -p must come last: it takes the next argument as the prompt
     args += ["-p", prompt]
     if FORBIDDEN_FLAGS & set(args):
-        raise GeminiError("Verboden vlag in agy-aanroep.")
+        raise GeminiError("Forbidden flag in agy call.")
     return args
 
 
@@ -100,7 +100,7 @@ def child_env() -> dict:
 
 
 def parse_stream(stdout: str) -> dict:
-    """Haal conversation_id, antwoord en status uit stream-json-uitvoer."""
+    """Extract conversation_id, response and status from stream-json output."""
     conversation_id = None
     result = None
     for line in stdout.splitlines():
@@ -117,7 +117,7 @@ def parse_stream(stdout: str) -> dict:
             result = event.get("result", {})
             conversation_id = result.get("conversation_id") or conversation_id
     if result is None:
-        raise GeminiError("Geen resultaat ontvangen van agy.")
+        raise GeminiError("No result received from agy.")
     return {
         "conversation_id": conversation_id,
         "status": result.get("status"),
@@ -147,7 +147,7 @@ async def ask(question: str, thread: str, model: str, timeout_s: int) -> dict:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise GeminiError(f"Gemini antwoordde niet binnen {timeout_s} seconden.") from None
+        raise GeminiError(f"Gemini did not answer within {timeout_s} seconds.") from None
 
     stdout = out.decode("utf-8", errors="replace")
     stderr = err.decode("utf-8", errors="replace")
@@ -155,7 +155,7 @@ async def ask(question: str, thread: str, model: str, timeout_s: int) -> dict:
         parsed = parse_stream(stdout)
     except GeminiError:
         tail = (stderr or stdout).strip()[-800:]
-        raise GeminiError(f"agy gaf geen bruikbaar antwoord (exit {proc.returncode}). {tail}") from None
+        raise GeminiError(f"agy returned no usable answer (exit {proc.returncode}). {tail}") from None
 
     if parsed["status"] != "SUCCESS":
         raise GeminiError(f"agy status {parsed['status']}: {parsed['response'][:800]}")

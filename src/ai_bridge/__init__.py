@@ -1,1 +1,1 @@
-"""ai-bridge: lokale brug tussen Claude en Gemini."""
+"""ai-bridge: a local MCP bridge between Claude and Gemini (Antigravity)."""

@@ -1,7 +1,7 @@
 [project]
 name = "ai-bridge"
 version = "0.1.0"
-description = "Lokale MCP-bridge tussen Claude en Gemini (Antigravity)"
+description = "Local MCP bridge that lets Claude and Gemini (Antigravity) talk, cross-check and delegate"
 requires-python = ">=3.13"
 dependencies = ["mcp[cli]>=2.3.0,<3"]
 
