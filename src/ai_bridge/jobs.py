@@ -27,16 +27,16 @@ import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import store
+from . import coder, store
 
 JOBS_DIR = store.HOME / "jobs"
 SLOTS_DIR = store.HOME / "slots"
 JOB_ID_RE_CHARS = set("0123456789abcdef")
 ACTIVE = {"queued", "running"}
-FINAL = {"done", "failed", "cancelled"}
+FINAL = {"done", "failed", "cancelled", "approved", "rejected"}
 START_GRACE = timedelta(seconds=30)
 
-ROLES = {"researcher", "reviewer"}
+ROLES = {"researcher", "reviewer", "coder"}
 
 # A reviewer may only look at normal folders inside the home folder.
 # Hidden top-level folders (.ssh, .gemini, .aws, ...) are always refused.
@@ -61,6 +61,16 @@ ROLE_PROMPTS = {
         "fix), and a last line that is exactly 'VERDICT: APPROVE' or "
         "'VERDICT: CHANGES_REQUESTED'.\n\n"
         "Review request:\n"
+    ),
+    "coder": (
+        "You are a coding subagent working for Claude (the orchestrator) through the "
+        "user's ai-bridge. The current directory is a copy of a repository (plain files, "
+        "no git). Make the changes requested below directly in these files. You may run "
+        "commands such as tests, but there is no network access and no git, and you must "
+        "not try to work around the sandbox. Keep the change focused on the request.\n"
+        "When done, reply in Markdown with: what you changed and why (per file), how to "
+        "test it, and anything you could not do or are unsure about.\n\n"
+        "Change request:\n"
     ),
 }
 
@@ -170,7 +180,14 @@ def create(role: str, task: str, path: str | None, model: str, thread: str | Non
            requested_by: str, depth: int, timeout_min: int) -> dict:
     if role not in ROLES:
         raise ValueError(f"Unknown role {role!r}. Choose from: {', '.join(sorted(ROLES))}.")
-    cwd = check_review_path(path) if role == "reviewer" else None
+    cwd = check_review_path(path) if role in {"reviewer", "coder"} else None
+    repo_info = None
+    if role == "coder":
+        repo_info = coder.check_repo(cwd)
+        busy = [j for j in active_jobs() if j["role"] == "coder" and j.get("path") == cwd]
+        if busy:
+            raise ValueError(f"Job {busy[0]['id']} is already coding in this repository. "
+                             "Wait for it, or cancel it first.")
 
     store.ensure_dir(JOBS_DIR)
     while True:
@@ -182,9 +199,12 @@ def create(role: str, task: str, path: str | None, model: str, thread: str | Non
             continue
     d = job_dir(job_id)
     workdir = store.ensure_dir(d / "workdir")
+    if role == "coder":
+        workdir = d / "workspace"  # filled by the worker from trusted.git
     job = {
         "id": job_id, "role": role, "task": task, "path": cwd,
-        "cwd": cwd or str(workdir), "model": model, "thread": thread,
+        "cwd": str(workdir) if role == "coder" else (cwd or str(workdir)),
+        "repo": repo_info, "coder": None, "model": model, "thread": thread,
         "requested_by": requested_by, "depth": depth, "timeout_min": timeout_min,
         "status": "queued", "created": now(), "started": None, "finished": None,
         "pid": None, "worker_started": False, "error": None, "warning": None, "usage": None,
@@ -259,12 +279,49 @@ def cancel(job_id: str, reason: str = "cancelled") -> dict:
         return job
 
 
+def _coder_job(job_id: str) -> dict:
+    job = refresh(load(job_id))
+    if job["role"] != "coder":
+        raise ValueError("This is not a coder job.")
+    return job
+
+
+def diff(job_id: str) -> tuple[dict, str]:
+    job = _coder_job(job_id)
+    return job, coder.diff_text(job_dir(job_id))
+
+
+def approve(job_id: str) -> dict:
+    """Bring a finished coder job into the repo as branch gemini/<id>."""
+    job = _coder_job(job_id)
+    if job["status"] != "done":
+        raise ValueError(f"Only finished jobs can be approved (status: {job['status']}).")
+    info = job.get("coder") or {}
+    if not info.get("changed"):
+        raise ValueError("This job made no changes.")
+    branch = coder.approve(job_dir(job_id), job["path"], info["commit"], job_id)
+    coder.cleanup(job_dir(job_id))
+    return update(job_id, status="approved", branch=branch, finished=now())
+
+
+def reject(job_id: str) -> dict:
+    job = _coder_job(job_id)
+    if job["status"] in ACTIVE:
+        cancel(job_id)
+    elif job["status"] not in {"done", "failed", "cancelled"}:
+        raise ValueError(f"Cannot reject a job with status {job['status']}.")
+    coder.cleanup(job_dir(job_id))
+    return update(job_id, status="rejected", finished=now())
+
+
 def cancel_all(reason: str) -> list[dict]:
     return [cancel(j["id"], reason) for j in active_jobs()]
 
 
 def summary_line(job: dict) -> str:
     where = f" path={job['path']}" if job.get("path") else ""
+    if job.get("branch"):
+        where += f" branch={job['branch']}"
     task = job["task"].replace("\n", " ")
     task = task[:80] + ("..." if len(task) > 80 else "")
     return f"{job['id']}  {job['status']:9} {job['role']:10} {job['model']}{where}  {task}"

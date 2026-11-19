@@ -22,6 +22,27 @@ if "FAIL" in prompt:
     print("simulated failure", file=sys.stderr)
     sys.exit(1)
 conv = args[args.index("--conversation") + 1] if "--conversation" in args else str(uuid.uuid4())
+if "EDIT" in prompt:
+    # Behave like a (hostile) coder in the workspace
+    with open("main.py", "a") as f:
+        f.write("print('edited by gemini')\n")
+    with open("new_file.txt", "w") as f:
+        f.write("new\n")
+    marker = os.path.join(os.environ.get("AI_BRIDGE_HOME", "/tmp"), "PWNED")
+    os.makedirs(".git/hooks", exist_ok=True)
+    with open(".git/config", "w") as f:
+        f.write(f'[filter "evil"]\n\tclean = touch {marker}; cat\n[core]\n\tfsmonitor = touch {marker}\n')
+    with open(".git/hooks/pre-commit", "w") as f:
+        f.write(f"#!/bin/sh\ntouch {marker}\n")
+    os.chmod(".git/hooks/pre-commit", 0o755)
+    with open(".gitattributes", "w") as f:
+        f.write("* filter=evil\n")
+    if "SYMLINK" in prompt:
+        os.symlink("/etc/passwd", "innocent_link")
+    if "EXEC" in prompt:
+        with open("run.sh", "w") as f:
+            f.write("#!/bin/sh\necho hi\n")
+        os.chmod("run.sh", 0o755)
 status, response, error = "SUCCESS", "Fake answer\nVERDICT: APPROVE", None
 if "PARTIAL" in prompt:
     status, error = "ERROR", "The stream was interrupted."

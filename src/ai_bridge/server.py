@@ -154,9 +154,13 @@ def gemini_task(
     - researcher: researches the task on the web and returns a sourced report.
     - reviewer: reviews the folder given in `path` (a normal folder inside the
       user's home) and returns issues plus 'VERDICT: APPROVE' or
-      'VERDICT: CHANGES_REQUESTED'.
-    Neither role can modify files or run shell commands; every job runs in the
-    sandbox. Up to max_parallel_jobs run at once; extra jobs wait in a queue.
+      'VERDICT: CHANGES_REQUESTED'. Cannot modify files or run commands.
+    - coder: edits a copy of the git repository at `path` (its root folder),
+      starting from the last commit. It may run commands in the sandbox (no
+      network, no git). Its changes never reach the repo by themselves: review
+      them with gemini_diff, then gemini_approve (creates branch gemini/<id>)
+      or gemini_reject. One coder job per repository at a time.
+    Every job runs in the sandbox. Up to max_parallel_jobs run at once; extra jobs wait in a queue.
     You can start several jobs in a row to work in parallel. Check progress
     with gemini_jobs and fetch output with gemini_result.
     """
@@ -166,7 +170,12 @@ def gemini_task(
         thread = store.check_thread(thread)
         job = jobs.create(role, task, path, chosen, thread, AGENT, depth, cfg["job_timeout_min"])
         store.append(AGENT, f"[job {job['id']} {role}] started: {task}"[: store.MAX_TEXT], thread)
-    return (f"Started job {job['id']} ({role}, {chosen}). "
+    note = ""
+    if job.get("repo"):
+        note = f" Working from commit {job['repo']['base'][:10]} on {job['repo']['branch']}."
+        if job["repo"]["dirty"]:
+            note += " Note: the repository has uncommitted changes; Gemini does not see those."
+    return (f"Started job {job['id']} ({role}, {chosen}).{note} "
             "Use gemini_result with this id to fetch the answer; it usually takes 1-5 minutes.")
 
 
@@ -187,15 +196,62 @@ def gemini_result(job_id: str) -> str:
         job, text = jobs.result(job_id)
     head = jobs.summary_line(job)
     status = job["status"]
-    if status == "done":
+    if status in {"done", "approved", "rejected"}:
         tokens = (job.get("usage") or {}).get("total_tokens", "?")
         warning = f"Warning from agy: {job['warning']}" if job.get("warning") else None
-        return f"{head}\n({tokens} tokens)\n" + untrusted("gemini", text or "", warning)
+        extra = ""
+        info = job.get("coder")
+        if info and info.get("changed") and status == "done":
+            extra = ("\nThis coder job changed files. Review them with gemini_diff, then "
+                     "gemini_approve or gemini_reject.")
+        return f"{head}\n({tokens} tokens){extra}\n" + untrusted("gemini", text or "", warning)
     if status == "failed":
         return f"{head}\n" + untrusted("job_error", str(job.get("error")))
     if status == "cancelled":
         return f"{head}\nThis job was cancelled." + (f" Reason: {job['error']}" if job.get("error") else "")
     return f"{head}\nNot finished yet. Try again in a minute."
+
+
+def gemini_diff(job_id: str) -> str:
+    """Show the changes of a finished coder job: file stats, risk flags and the full diff.
+
+    Review this carefully before gemini_approve. Pay extra attention to the
+    risk flags (symlinks, new executables, CI or build files).
+    """
+    with _friendly_errors():
+        store.require_on()
+        job, patch = jobs.diff(job_id)
+    info = job.get("coder") or {}
+    if job["status"] in jobs.ACTIVE:
+        return f"{jobs.summary_line(job)}\nNot finished yet."
+    if not info.get("changed"):
+        return f"{jobs.summary_line(job)}\nNo changes."
+    risks = "\n".join(f"- {r}" for r in info.get("risks") or []) or "- none"
+    return (f"{jobs.summary_line(job)}\nBase: {job['repo']['base'][:10]}  Commit: {info['commit'][:10]}\n"
+            f"Risk flags (computed by the bridge, trustworthy):\n{risks}\n\n"
+            f"Files:\n{info.get('stat', '')}\n" + untrusted("gemini_diff", patch))
+
+
+def gemini_approve(job_id: str) -> str:
+    """Approve a reviewed coder job: its commit becomes branch gemini/<id> in the repository.
+
+    The current branch is not changed; the user (or Claude, when asked) merges it.
+    """
+    with _friendly_errors():
+        store.require_on()
+        job = jobs.approve(job_id)
+        store.append(AGENT, f"[job {job_id} coder] approved as branch {job['branch']}", job.get("thread"))
+    return (f"Approved. The changes are on branch {job['branch']} in {job['path']}. "
+            f"To merge: git -C {job['path']} merge {job['branch']}")
+
+
+def gemini_reject(job_id: str) -> str:
+    """Reject a coder job: its workspace and commit are thrown away."""
+    with _friendly_errors():
+        job = jobs.reject(job_id)
+        if store.is_enabled():
+            store.append(AGENT, f"[job {job_id} coder] rejected", job.get("thread"))
+    return jobs.summary_line(job)
 
 
 def gemini_cancel(job_id: str) -> str:
@@ -207,7 +263,8 @@ def gemini_cancel(job_id: str) -> str:
 
 # The Gemini-calling tools are only available to Claude (the orchestrator)
 if AGENT == "claude":
-    for _tool in (gemini_ask, gemini_task, gemini_jobs, gemini_result, gemini_cancel):
+    for _tool in (gemini_ask, gemini_task, gemini_jobs, gemini_result, gemini_cancel,
+                  gemini_diff, gemini_approve, gemini_reject):
         mcp.tool()(_tool)
 
 

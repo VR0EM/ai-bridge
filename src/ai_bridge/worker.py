@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-from . import config, gemini, jobs, sandbox, store
+from . import coder, config, gemini, jobs, sandbox, store
 
 _agy: subprocess.Popen | None = None
 
@@ -88,14 +88,19 @@ def run(job_id: str) -> int:
         return 0
 
     d = jobs.job_dir(job_id)
+    is_coder = job["role"] == "coder"
+    if is_coder:
+        coder.prepare(d, job["path"], job["repo"]["base"])
     settings_file = sandbox.write_settings(
         d / "settings.json",
-        sandbox.agy_settings(cfg["deny_commands"], read_only=True, web=job["role"] == "researcher"),
+        sandbox.agy_settings(cfg["deny_commands"], read_only=not is_coder,
+                             web=job["role"] == "researcher"),
     )
     timeout_s = int(job["timeout_min"]) * 60
     args = gemini.build_args(
         jobs.ROLE_PROMPTS[job["role"]] + job["task"],
         model=job["model"], timeout_s=timeout_s, settings_file=settings_file,
+        mode="accept-edits" if is_coder else "plan",
     )
 
     _agy = subprocess.Popen(args, cwd=job["cwd"], env=gemini.child_env(int(job["depth"])),
@@ -116,15 +121,28 @@ def run(job_id: str) -> int:
         parsed = gemini.parse_stream(out or "")
         _, warning = gemini.outcome(parsed)
     except gemini.GeminiError as e:
-        return fail(job_id, f"{e} {(err or '').strip()[-400:]}".strip())
+        if not is_coder:
+            return fail(job_id, f"{e} {(err or '').strip()[-400:]}".strip())
+        # A coder may have changed files before agy failed: keep them for review
+        parsed = {"response": "(Gemini ended without a final summary.)", "usage": {},
+                  "conversation_id": None}
+        warning = f"{e}"
 
+    if jobs.load(job_id)["status"] != "running":
+        return 0
+    changes = None
+    if is_coder:
+        changes = coder.finalize(d, job["repo"]["base"], job_id)
+        if not changes["changed"]:
+            warning = (warning + "; " if warning else "") + "Gemini made no changes."
     store.atomic_write(d / "result.md", parsed["response"])
     job = jobs.update(job_id, only_if_active=True, status="done", finished=jobs.now(),
-                      usage=parsed["usage"], warning=warning,
+                      usage=parsed["usage"], warning=warning, coder=changes,
                       conversation_id=parsed["conversation_id"])
     if job["status"] == "done":
         first = parsed["response"].strip().splitlines()
-        log_note(job, "done" + (" (with warning)" if warning else "") + ". "
+        extra = " Waiting for Claude's review (gemini_diff)." if changes and changes["changed"] else ""
+        log_note(job, "done" + (" (with warning)" if warning else "") + "." + extra + " "
                  + (first[0][:300] if first else ""))
     return 0
 
