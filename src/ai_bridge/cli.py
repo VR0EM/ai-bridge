@@ -79,6 +79,33 @@ def cmd_cancel(args) -> None:
     print(jobs.summary_line(jobs.cancel(args.job_id)))
 
 
+def cmd_install(_args) -> None:
+    from . import installer
+    for line in installer.install():
+        print(line)
+    print("\nDone. Restart the Claude desktop app (Cmd+Q) and Antigravity to load the bridge.")
+    print("Check everything with: bridge doctor --deep")
+
+
+def cmd_uninstall(args) -> None:
+    from . import installer
+    for line in installer.uninstall(purge=args.purge):
+        print(line)
+
+
+def cmd_doctor(args) -> None:
+    from . import doctor
+    if args.fix:
+        for line in doctor.fix():
+            print(line)
+        print()
+    results = doctor.checks()
+    if args.deep:
+        print("Running live checks (about 30 seconds)...\n")
+        results += doctor.deep_checks()
+    raise SystemExit(doctor.report(results))
+
+
 def main() -> None:
     store.ensure_home()
     p = argparse.ArgumentParser(prog="bridge", description="Manage the Claude-Gemini bridge.")
@@ -104,6 +131,15 @@ def main() -> None:
     c = sub.add_parser("cancel", help="cancel a Gemini job")
     c.add_argument("job_id")
     c.set_defaults(func=cmd_cancel)
+    sub.add_parser("install", help="register the bridge in Claude Code, Claude desktop and Antigravity"
+                   ).set_defaults(func=cmd_install)
+    u = sub.add_parser("uninstall", help="remove all registrations (keeps your data unless --purge)")
+    u.add_argument("--purge", action="store_true", help="also delete ~/.ai-bridge")
+    u.set_defaults(func=cmd_uninstall)
+    d = sub.add_parser("doctor", help="check the installation and explain how to fix problems")
+    d.add_argument("--deep", action="store_true", help="also do tiny live calls to Gemini and Claude")
+    d.add_argument("--fix", action="store_true", help="repair the bridge's own setup first")
+    d.set_defaults(func=cmd_doctor)
     args = p.parse_args()
     try:
         args.func(args)

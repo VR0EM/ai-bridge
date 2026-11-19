@@ -11,6 +11,27 @@ import time
 import uuid
 
 args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("1.5.12")
+    sys.exit(0)
+if args[:1] == ["mcp"]:
+    # Minimal `agy mcp add/remove` that edits ~/.gemini/config/mcp_config.json
+    path = os.path.join(os.environ["HOME"], ".gemini", "config", "mcp_config.json")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = json.load(open(path)) if os.path.exists(path) and os.path.getsize(path) else {}
+    servers = data.setdefault("mcpServers", {})
+    if args[1] == "add":
+        rest, env = args[2:], {}
+        while rest[0] == "--env":
+            k, v = rest[1].split("=", 1)
+            env[k] = v
+            rest = rest[2:]
+        servers[rest[0]] = {"command": rest[1], "args": rest[2:], "env": env}
+    elif args[1] == "remove":
+        if servers.pop(args[2], None) is None:
+            sys.exit(1)
+    json.dump(data, open(path, "w"))
+    sys.exit(0)
 prompt = args[args.index("-p") + 1]
 if os.environ.get("AI_BRIDGE_HOME"):
     with open(os.path.join(os.environ["AI_BRIDGE_HOME"], "fake_agy.log"), "a") as f:
@@ -50,6 +71,8 @@ if "EDIT" in prompt:
             f.write("#!/bin/sh\necho hi\n")
         os.chmod("run.sh", 0o755)
 status, response, error = "SUCCESS", "Fake answer\nVERDICT: APPROVE", None
+if "Reply with exactly: OK" in prompt:
+    response = "OK"
 if "PARTIAL" in prompt:
     status, error = "ERROR", "The stream was interrupted."
 if "EMPTYERR" in prompt:
