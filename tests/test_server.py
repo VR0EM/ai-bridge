@@ -38,7 +38,7 @@ def test_gemini_does_not_get_the_orchestrator_tools():
     names, _ = run_tools("gemini", [])
     assert set(names) == {"post_note", "read_notes", "bridge_status", "claude_ask"}
     names, _ = run_tools("claude", [])
-    assert {"gemini_ask", "gemini_task", "gemini_jobs", "gemini_result", "gemini_cancel"} <= set(names)
+    assert {"gemini_ask", "gemini_task", "gemini_wait", "gemini_jobs", "gemini_result", "gemini_cancel"} <= set(names)
     assert "claude_ask" not in names
 
 
@@ -59,8 +59,8 @@ def test_untrusted_wrapper_cannot_be_closed_early():
 
 
 def test_max_depth_blocks_new_gemini_calls(fake_agy):
-    _, out = run_tools("claude", [("gemini_ask", {"question": "hi"}),
-                                  ("gemini_task", {"task": "hi"})],
+    _, out = run_tools("claude", [("gemini_ask", {"question": "hi", "reason": "second opinion"}),
+                                  ("gemini_task", {"task": "hi", "reason": "parallel research"})],
                        {"AI_BRIDGE_DEPTH": "2"})
     assert all(err and "Maximum depth" in text for err, text in out)
 
@@ -104,3 +104,41 @@ def test_gemini_can_ask_claude_over_mcp(fake_claude):
 def test_claude_ask_respects_depth(fake_claude):
     _, out = run_tools("gemini", [("claude_ask", {"question": "hi"})], {"AI_BRIDGE_DEPTH": "2"})
     assert out[0][0] and "Maximum depth" in out[0][1]
+
+
+def test_gemini_wait_returns_when_jobs_finish(fake_agy):
+    a = jobs.create("researcher", "SLEEP2 a", None, "gemini-4-neon-high", None, "claude", 0, 1)
+    b = jobs.create("researcher", "b", None, "gemini-4-neon-high", None, "claude", 0, 1)
+    import time
+    t = time.time()
+    _, out = run_tools("claude", [("gemini_wait", {"job_ids": [a["id"], b["id"]], "max_wait_s": 60})])
+    err, text = out[0]
+    assert not err and "All finished" in text and time.time() - t < 30
+
+
+def test_gemini_wait_gives_up_after_max_wait(fake_agy):
+    a = jobs.create("researcher", "SLEEP30 slow", None, "gemini-4-neon-high", None, "claude", 0, 1)
+    _, out = run_tools("claude", [("gemini_wait", {"job_ids": [a["id"]], "max_wait_s": 5})])
+    assert "still running" in out[0][1]
+    jobs.cancel(a["id"])
+
+
+def test_orchestrator_instructions_reach_claude_only():
+    async def go(agent):
+        params = StdioServerParameters(command=sys.executable, args=["-m", "ai_bridge.server"],
+                                       env={**os.environ, "AI_BRIDGE_AGENT": agent})
+        async with Client(params) as c:
+            return c.instructions or ""
+    claude_text = asyncio.run(go("claude"))
+    assert "ALWAYS ask the user first" in claude_text and "gemini_wait" in claude_text
+    gemini_text = asyncio.run(go("gemini"))
+    assert "ALWAYS ask" not in gemini_text and "claude_ask" in gemini_text
+
+
+def test_gemini_calls_need_a_reason_which_is_logged(fake_agy):
+    _, out = run_tools("claude", [("gemini_task", {"task": "look into X", "reason": ""}),
+                                  ("gemini_task", {"task": "look into X",
+                                                   "reason": "parallel research while I code"})])
+    assert out[0][0] and "short reason" in out[0][1]
+    assert not out[1][0]
+    assert any("(why: parallel research while I code)" in e["text"] for e in store.read_all())

@@ -20,10 +20,30 @@ flowchart LR
 |---|---|---|
 | Claude → Gemini | `gemini_ask` | Discuss or cross-check something; the conversation continues per thread |
 | Claude → Gemini | `gemini_task` | Background subagents: `researcher` (web), `reviewer` (reads a folder), `coder` (edits a copy of a repo). Up to 3 run in parallel |
-| Claude → Gemini | `gemini_jobs`, `gemini_result`, `gemini_cancel` | Follow up on jobs |
+| Claude → Gemini | `gemini_wait`, `gemini_jobs`, `gemini_result`, `gemini_cancel` | Wait for and follow up on jobs |
 | Claude → Gemini | `gemini_diff`, `gemini_approve`, `gemini_reject` | Review a coder job; approval puts the change on branch `gemini/<id>`, never on your current branch |
 | Gemini → Claude | `claude_ask` | Ask Claude for feedback or a second opinion (text only, optional read access to a folder) |
 | Both | `post_note`, `read_notes` | A shared conversation log |
+
+## How Claude decides
+
+You give Claude the task; Claude decides whether Gemini would help, and then
+**always asks you first** in one short sentence: what it wants Gemini to do and
+why. Only after your yes does it call Gemini. The reason is required by the tools
+and written to the log, so you can always see why Gemini was used.
+
+Claude is guided (through MCP server instructions and the tool descriptions) to
+propose Gemini for:
+
+- a quick second opinion on a plan, design or claim (`gemini_ask`);
+- research that can run in parallel while Claude keeps working (`researcher` jobs);
+- an independent review before Claude calls work finished (`reviewer` jobs);
+- a well-scoped change in a git repository (`coder` jobs), which Claude must review in full before approving.
+
+And not for trivial tasks, anything with secrets or credentials, or infrastructure
+work. Following up on an approved job needs no new permission. Claude stays
+responsible for the result and tells you in one line what Gemini contributed.
+You never have to open the panel or the log; they are there when you want to look.
 
 ## Security model
 
