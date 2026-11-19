@@ -35,6 +35,13 @@ SAFE_GIT_CONFIG = [
 AUTHOR = {"GIT_AUTHOR_NAME": "Gemini (ai-bridge)", "GIT_AUTHOR_EMAIL": "ai-bridge@localhost",
           "GIT_COMMITTER_NAME": "ai-bridge", "GIT_COMMITTER_EMAIL": "ai-bridge@localhost"}
 MAX_DIFF_CHARS = 60000
+# Build and cache junk that never belongs in a commit. These only apply to
+# untracked files, so a repo that tracks e.g. dist/ on purpose is not affected.
+DEFAULT_EXCLUDES = [
+    "__pycache__/", "*.py[cod]", ".pytest_cache/", ".mypy_cache/", ".ruff_cache/",
+    ".tox/", ".venv/", "venv/", "*.egg-info/", "node_modules/", ".DS_Store",
+    ".coverage", "htmlcov/", ".ipynb_checkpoints/", "target/debug/", "target/release/",
+]
 RISKY_PATHS = (".github/", ".gitlab-ci", ".gitattributes", ".gitmodules", ".gitignore",
                ".pre-commit-config", ".envrc", ".vscode/", "Makefile", "package.json",
                "pyproject.toml", "setup.py", "Dockerfile", "docker-compose")
@@ -96,6 +103,8 @@ def prepare(job_dir: Path, repo: str, base: str) -> Path:
     trusted, workspace, index = paths(job_dir)
     git("clone", "--quiet", "--bare", "--no-hardlinks", "--no-local", repo, str(trusted))
     git("config", "core.hooksPath", "/dev/null", git_dir=trusted)
+    store.ensure_dir(trusted / "info")
+    store.atomic_write(trusted / "info" / "exclude", "\n".join(DEFAULT_EXCLUDES) + "\n")
     store.ensure_dir(workspace)
     git("read-tree", base, git_dir=trusted, index=index)
     git("checkout-index", "--all", "--force", git_dir=trusted, work_tree=workspace, index=index)
@@ -124,6 +133,10 @@ def finalize(job_dir: Path, base: str, job_id: str) -> dict:
 def risks(trusted: Path, base: str, commit: str) -> list[str]:
     """Flag changes a reviewer should look at extra carefully."""
     found = []
+    for line in git("diff", "--numstat", "-z", "--no-renames", base, commit, git_dir=trusted).split("\0"):
+        parts = line.split("\t")
+        if len(parts) == 3 and parts[0] == "-" and parts[1] == "-":
+            found.append(f"binary file: {parts[2]}")
     raw = git("diff", "--raw", "-z", "--no-renames", base, commit, git_dir=trusted).split("\0")
     i = 0
     while i < len(raw) - 1:

@@ -59,6 +59,7 @@ def test_coder_changes_end_up_on_a_branch_only_after_approval(fake_agy, repo):
     _, patch = jobs.diff(job["id"])
     assert "edited by gemini" in patch and "new_file.txt" in patch
     assert ".git/" not in patch  # Gemini's planted .git folder is never content
+    assert "__pycache__" not in patch  # build junk is excluded by default
     approved = jobs.approve(job["id"])
     assert approved["status"] == "approved"
     branch = approved["branch"]
@@ -76,11 +77,12 @@ def test_planted_git_config_hooks_and_filters_never_run(fake_agy, repo):
 
 
 def test_risk_flags(fake_agy, repo):
-    done = wait(start(repo, "EDIT SYMLINK EXEC")["id"])
+    done = wait(start(repo, "EDIT SYMLINK EXEC BINARY")["id"])
     risks = "\n".join(done["coder"]["risks"])
     assert "symlink: innocent_link -> /etc/passwd" in risks
     assert "made executable: run.sh" in risks
     assert "sensitive file changed: .gitattributes" in risks
+    assert "binary file: blob.bin" in risks
 
 
 def test_coder_settings_allow_commands_but_no_web(fake_agy, repo):

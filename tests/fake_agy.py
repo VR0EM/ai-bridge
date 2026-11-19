@@ -37,6 +37,12 @@ if "EDIT" in prompt:
     os.chmod(".git/hooks/pre-commit", 0o755)
     with open(".gitattributes", "w") as f:
         f.write("* filter=evil\n")
+    os.makedirs("__pycache__", exist_ok=True)
+    with open("__pycache__/main.cpython-313.pyc", "wb") as f:
+        f.write(b"\x00junk")
+    if "BINARY" in prompt:
+        with open("blob.bin", "wb") as f:
+            f.write(b"\x00\x01\x02")
     if "SYMLINK" in prompt:
         os.symlink("/etc/passwd", "innocent_link")
     if "EXEC" in prompt:
