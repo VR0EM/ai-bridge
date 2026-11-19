@@ -90,20 +90,28 @@ def test_dead_worker_is_marked_failed():
 
 
 def test_worker_crash_does_not_leave_job_hanging(fake_agy):
-    job = start("hello")
-    config.CONFIG_FILE.write_text("{broken")  # worker crashes while loading config
-    done = wait(job["id"])
-    config.CONFIG_FILE.unlink()
-    assert done["status"] in {"failed", "done"}  # 'done' if it loaded config before the break
+    config.CONFIG_FILE.write_text("{broken")  # jobs.create() does not read config; the worker does
+    done = wait(start("hello")["id"])
+    assert done["status"] == "failed"
+    assert "Worker crashed" in done["error"]
 
 
-def test_review_path_rules(home_dir):
-    assert jobs.check_review_path(str(home_dir)) == str(home_dir.resolve())
-    home = Path.home()
-    for bad in [None, str(home), "/etc", str(home / ".ssh"), str(home / ".SSH"),
-                str(home / "library"), str(home / "does-not-exist-xyz")]:
-        with pytest.raises(ValueError):
+def test_review_path_rules(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    for name in ["projects/app", ".ssh", "LIBRARY", "work/bridge-data"]:
+        (home / name).mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    assert jobs.check_review_path(str(home / "projects/app")) == str((home / "projects/app").resolve())
+    for bad, msg in [(None, "needs a 'path'"), (str(home), "inside your home"),
+                     ("/etc", "inside your home"), (str(home / ".ssh"), "hidden or system"),
+                     (str(home / "LIBRARY"), "hidden or system"),
+                     (str(home / "nope"), "Not a folder")]:
+        with pytest.raises(ValueError, match=msg):
             jobs.check_review_path(bad)
+    # A folder that contains a custom bridge data folder is refused too
+    monkeypatch.setattr(store, "HOME", home / "work" / "bridge-data")
+    with pytest.raises(ValueError, match="data folder"):
+        jobs.check_review_path(str(home / "work"))
 
 
 def test_reviewer_runs_inside_the_folder(fake_agy, home_dir):
@@ -115,6 +123,7 @@ def test_reviewer_runs_inside_the_folder(fake_agy, home_dir):
     assert Path(call["cwd"]).resolve() == home_dir.resolve()
     settings = json.loads(Path(call["args"][call["args"].index("--settings") + 1]).read_text())
     assert settings["permissions"]["allow"] == []
+    assert "read_url(*)" in settings["permissions"]["deny"]
 
 
 @pytest.mark.parametrize("bad", ["../../etc", "", "XYZ", "a" * 40])

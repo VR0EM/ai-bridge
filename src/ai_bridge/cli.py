@@ -9,7 +9,7 @@ from . import jobs, store
 
 def cmd_status(_args) -> None:
     state = "ON" if store.is_enabled() else "OFF"
-    active = [j for j in jobs.list_jobs(200) if j["status"] in jobs.ACTIVE]
+    active = jobs.active_jobs()
     print(f"Bridge: {state}")
     print(f"Data:   {store.HOME}")
     print(f"Log:    {len(store.read_all())} messages")
@@ -35,6 +35,8 @@ def cmd_note(args) -> None:
 
 
 def cmd_tail(args) -> None:
+    args.n = max(1, args.n)
+    args.thread = store.check_thread(args.thread)
     entries = store.read_all()
     if args.thread:
         entries = [e for e in entries if e.get("thread") == args.thread]

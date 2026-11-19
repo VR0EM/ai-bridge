@@ -26,7 +26,7 @@ THREADS_FILE = store.HOME / "threads.json"
 THREADS_LOCK = store.HOME / "threads.lock"
 
 FORBIDDEN_FLAGS = ("--dangerously-skip-permissions",)
-CONV_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+CONV_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9-]{7,63}\Z")
 MAX_PROMPT = 20000
 
 ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM",
@@ -124,6 +124,8 @@ def build_args(prompt: str, *, model: str, timeout_s: int, settings_file: Path,
         "--print-timeout", f"{int(timeout_s)}s",
     ]
     if conversation_id:
+        if not CONV_RE.match(conversation_id):
+            raise GeminiError("Invalid conversation id.")
         args += ["--conversation", conversation_id]
     # -p must come last: it takes the next argument as the prompt.
     # The prompt never starts with '-', so it cannot be mistaken for a flag.
@@ -183,7 +185,8 @@ def kill_group(pid: int) -> None:
         os.killpg(pid, signal.SIGKILL)
 
 
-async def ask(question: str, thread: str, model: str, timeout_s: int, deny_commands: list[str]) -> dict:
+def _prepare(question: str, thread: str, model: str, timeout_s: int,
+             deny_commands: list[str]) -> tuple[list[str], Path]:
     workdir = store.ensure_dir(WORK_DIR / thread)
     settings_file = sandbox.write_settings(
         WORK_DIR / f"{thread}.settings.json",
@@ -193,22 +196,43 @@ async def ask(question: str, thread: str, model: str, timeout_s: int, deny_comma
     prompt = ("Follow-up question:\n" + question) if conversation_id else ASK_PREAMBLE + question
     args = build_args(prompt, model=model, timeout_s=timeout_s,
                       settings_file=settings_file, conversation_id=conversation_id)
+    return args, workdir
 
+
+async def _stop(proc) -> None:
+    kill_group(proc.pid)
+    with contextlib.suppress(BaseException):
+        await asyncio.wait_for(asyncio.shield(proc.wait()), 5)  # reap: no zombies
+
+
+async def ask(question: str, thread: str, model: str, timeout_s: int, deny_commands: list[str]) -> dict:
+    # File and lock work runs off the event loop
+    args, workdir = await asyncio.to_thread(_prepare, question, thread, model, timeout_s, deny_commands)
     proc = await asyncio.create_subprocess_exec(
         *args, cwd=workdir, env=child_env(),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
     )
+    task = asyncio.ensure_future(proc.communicate())
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_s + 30
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s + 30)
-    except asyncio.TimeoutError:
-        kill_group(proc.pid)
-        await proc.wait()
-        raise GeminiError(f"Gemini did not answer within {timeout_s} seconds.") from None
+        while True:
+            done, _ = await asyncio.wait({task}, timeout=2)
+            if done:
+                out, err = task.result()
+                break
+            if not store.is_enabled():  # the kill switch also stops a running ask
+                await _stop(proc)
+                raise store.BridgeOff("The bridge was switched off while Gemini was answering.")
+            if loop.time() > deadline:
+                await _stop(proc)
+                raise GeminiError(f"Gemini did not answer within {timeout_s} seconds.")
     except BaseException:
-        # Cancelled by the client: never leave agy running
-        kill_group(proc.pid)
+        # Cancelled by the client (or any error): never leave agy running
+        task.cancel()
+        await _stop(proc)
         raise
 
     stdout = out.decode("utf-8", errors="replace")
@@ -220,6 +244,6 @@ async def ask(question: str, thread: str, model: str, timeout_s: int, deny_comma
         raise GeminiError(f"agy returned no usable answer (exit {proc.returncode}). {tail}") from None
 
     _, warning = outcome(parsed)
-    save_conversation(thread, parsed["conversation_id"])
+    await asyncio.to_thread(save_conversation, thread, parsed["conversation_id"])
     parsed["warning"] = warning
     return parsed

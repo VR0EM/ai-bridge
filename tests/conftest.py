@@ -1,4 +1,5 @@
 """Test setup: every test runs against a throwaway AI_BRIDGE_HOME and a fake agy."""
+import atexit
 import os
 import shutil
 import stat
@@ -9,6 +10,7 @@ from pathlib import Path
 # Must happen before ai_bridge is imported: module paths are resolved at import time.
 _HOME = Path(tempfile.mkdtemp(prefix="ai-bridge-test-"))
 os.environ["AI_BRIDGE_HOME"] = str(_HOME)
+atexit.register(shutil.rmtree, _HOME, ignore_errors=True)
 os.environ.pop("AI_BRIDGE_DEPTH", None)
 
 import pytest  # noqa: E402

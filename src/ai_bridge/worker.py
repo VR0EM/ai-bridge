@@ -74,7 +74,6 @@ def fail(job_id: str, error: str) -> int:
 
 def run(job_id: str) -> int:
     global _agy
-    alive = hold_alive_lock(job_id)  # noqa: F841 (held until exit)
     job = jobs.update(job_id, worker_started=True, pid=os.getpid())
     cfg = config.load()
 
@@ -133,6 +132,9 @@ def run(job_id: str) -> int:
 def main(job_id: str) -> int:
     store.ensure_home()  # sets umask 077: every file this worker writes is private
     signal.signal(signal.SIGTERM, _on_sigterm)
+    # Hold alive.lock across run() and fail(), so nobody declares us dead
+    # while we are still recording what went wrong.
+    alive = hold_alive_lock(job_id)
     try:
         return run(job_id)
     except SystemExit:
@@ -142,6 +144,8 @@ def main(job_id: str) -> int:
             return fail(job_id, f"Worker crashed: {type(e).__name__}: {e}")
         except Exception:
             return 1
+    finally:
+        alive.close()
 
 
 if __name__ == "__main__":

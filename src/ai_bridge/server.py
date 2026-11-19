@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+import secrets
 import sys
 from contextlib import contextmanager
 
@@ -23,9 +25,20 @@ DATA_NOTICE = (
 )
 
 
-def untrusted(source: str, text: str) -> str:
-    """Wrap another agent's output so it is clearly data, with the notice first."""
-    return f"{DATA_NOTICE}\n<untrusted_{source}_output>\n{text}\n</untrusted_{source}_output>"
+_TAG_RE = re.compile(r"</?\s*untrusted", re.IGNORECASE)
+
+
+def untrusted(source: str, text: str, extra: str | None = None) -> str:
+    """Wrap another agent's output so it is clearly data, with the notice first.
+
+    The tag carries a random nonce and any look-alike tags inside the text are
+    neutralised, so the content cannot close the wrapper early.
+    """
+    tag = f"untrusted_{source}_output_{secrets.token_hex(4)}"
+    body = _TAG_RE.sub("[tag removed]", text)
+    if extra:
+        body = _TAG_RE.sub("[tag removed]", extra) + "\n\n" + body
+    return f"{DATA_NOTICE}\n<{tag}>\n{body}\n</{tag}>"
 
 
 @contextmanager
@@ -120,11 +133,12 @@ async def gemini_ask(
             store.append, AGENT, f"[question for Gemini] {question}"[: store.MAX_TEXT], thread)
         result = await gemini.ask(question, thread, chosen, cfg["ask_timeout_s"], cfg["deny_commands"])
         answer = result["response"]
-        await asyncio.to_thread(store.append, "gemini", answer[: store.MAX_TEXT], thread)
+        if store.is_enabled():
+            await asyncio.to_thread(store.append, "gemini", answer[: store.MAX_TEXT], thread)
     tokens = result["usage"].get("total_tokens", "?")
-    warning = f"\nWarning: {result['warning']}" if result.get("warning") else ""
-    return (f"Answer from Gemini ({chosen}, thread '{thread}', {tokens} tokens).{warning}\n"
-            + untrusted("gemini", answer))
+    warning = f"Warning from agy: {result['warning']}" if result.get("warning") else None
+    return (f"Answer from Gemini ({chosen}, thread '{thread}', {tokens} tokens).\n"
+            + untrusted("gemini", answer, warning))
 
 
 def gemini_task(
@@ -175,10 +189,10 @@ def gemini_result(job_id: str) -> str:
     status = job["status"]
     if status == "done":
         tokens = (job.get("usage") or {}).get("total_tokens", "?")
-        warning = f"\nWarning: {job['warning']}" if job.get("warning") else ""
-        return f"{head}\n({tokens} tokens){warning}\n" + untrusted("gemini", text or "")
+        warning = f"Warning from agy: {job['warning']}" if job.get("warning") else None
+        return f"{head}\n({tokens} tokens)\n" + untrusted("gemini", text or "", warning)
     if status == "failed":
-        return f"{head}\nError: {job.get('error')}"
+        return f"{head}\n" + untrusted("job_error", str(job.get("error")))
     if status == "cancelled":
         return f"{head}\nThis job was cancelled." + (f" Reason: {job['error']}" if job.get("error") else "")
     return f"{head}\nNot finished yet. Try again in a minute."

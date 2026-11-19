@@ -79,6 +79,9 @@ def agy_settings(deny_commands: list[str], *, read_only: bool, web: bool) -> dic
     deny = [f"command({c})" for c in deny_commands]
     if read_only:
         deny.append("command(*)")
+    if not web:
+        # Settings are added on top of the global ones: deny explicitly
+        deny.append("read_url(*)")
     return {
         "enableTerminalSandbox": True,
         "toolPermission": "proceed-in-sandbox",

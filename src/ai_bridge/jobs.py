@@ -23,6 +23,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -65,6 +66,7 @@ ROLE_PROMPTS = {
 
 # Popen objects of workers started by this process, so they get reaped
 _children: list[subprocess.Popen] = []
+_children_lock = threading.Lock()
 
 
 def now() -> str:
@@ -128,9 +130,8 @@ def worker_alive(job_id: str) -> bool:
 
 def reap() -> None:
     """Collect exited worker processes started by this process (no zombies)."""
-    for p in list(_children):
-        if p.poll() is not None:
-            _children.remove(p)
+    with _children_lock:
+        _children[:] = [p for p in _children if p.poll() is None]
 
 
 def refresh(job: dict) -> dict:
@@ -159,8 +160,9 @@ def check_review_path(path: str | None) -> str:
     # macOS file systems are usually case-insensitive: compare case-folded
     if top.startswith(".") or top.casefold() in SENSITIVE_TOP:
         raise ValueError(f"Refusing to review a hidden or system folder: ~/{top}")
-    if store.HOME.resolve() == p or store.HOME.resolve() in p.parents:
-        raise ValueError("Refusing to review the bridge's own data folder.")
+    bridge_home = store.HOME.resolve()
+    if bridge_home == p or bridge_home in p.parents or p in bridge_home.parents:
+        raise ValueError("Refusing to review the bridge's own data folder (or a folder containing it).")
     return str(p)
 
 
@@ -191,22 +193,30 @@ def create(role: str, task: str, path: str | None, model: str, thread: str | Non
     # Hold the job lock until the pid is recorded: the worker waits for it.
     with _lock(job_id):
         _write(job)
-        with open(d / "worker.log", "ab") as log:
-            proc = subprocess.Popen(
-                [sys.executable, "-m", "ai_bridge.worker", job_id],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                start_new_session=True,  # own process group: survives client restarts
-                env={**os.environ, "AI_BRIDGE_HOME": str(store.HOME)},
-            )
-        _children.append(proc)
+        try:
+            with open(d / "worker.log", "ab") as log:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "ai_bridge.worker", job_id],
+                    stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                    start_new_session=True,  # own process group: survives client restarts
+                    env={**os.environ, "AI_BRIDGE_HOME": str(store.HOME)},
+                )
+        except OSError as e:
+            job.update(status="failed", finished=now(), error=f"Could not start worker: {e}")
+            _write(job)
+            raise ValueError(f"Could not start the job worker: {e}") from None
+        with _children_lock:
+            _children.append(proc)
         job["pid"] = proc.pid
         _write(job)
     return job
 
 
-def list_jobs(limit: int = 20) -> list[dict]:
+def list_jobs(limit: int | None = 20) -> list[dict]:
+    """Recent jobs, newest first. limit=None returns all of them."""
     reap()
-    limit = max(1, min(int(limit), 200))
+    if limit is not None:
+        limit = max(1, min(int(limit), 200))
     if not JOBS_DIR.exists():
         return []
     found = []
@@ -220,7 +230,11 @@ def list_jobs(limit: int = 20) -> list[dict]:
         except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError):
             continue
     found.sort(key=lambda j: j["created"], reverse=True)
-    return found[:limit]
+    return found if limit is None else found[:limit]
+
+
+def active_jobs() -> list[dict]:
+    return [j for j in list_jobs(None) if j["status"] in ACTIVE]
 
 
 def result(job_id: str) -> tuple[dict, str | None]:
@@ -246,7 +260,7 @@ def cancel(job_id: str, reason: str = "cancelled") -> dict:
 
 
 def cancel_all(reason: str) -> list[dict]:
-    return [cancel(j["id"], reason) for j in list_jobs(200) if j["status"] in ACTIVE]
+    return [cancel(j["id"], reason) for j in active_jobs()]
 
 
 def summary_line(job: dict) -> str:

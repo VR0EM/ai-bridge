@@ -11,7 +11,7 @@ import re
 
 from . import store
 
-MODEL_RE = re.compile(r"^gemini-[a-z0-9][a-z0-9._-]{0,60}$")
+MODEL_RE = re.compile(r"\Agemini-[a-z0-9][a-z0-9._-]{0,60}\Z")
 
 DEFAULTS = {
     # Model used by gemini_ask and gemini_task (see: agy models)
@@ -39,6 +39,7 @@ RANGES = {
 }
 
 CONFIG_FILE = store.HOME / "config.json"
+CONFIG_LOCK = store.HOME / "config.lock"
 
 
 def validate(cfg: dict) -> dict:
@@ -54,8 +55,12 @@ def validate(cfg: dict) -> dict:
     return cfg
 
 
+def _defaults() -> dict:
+    return {**DEFAULTS, "deny_commands": list(DEFAULTS["deny_commands"])}
+
+
 def load() -> dict:
-    cfg = dict(DEFAULTS)
+    cfg = _defaults()
     try:
         with CONFIG_FILE.open() as f:
             user = json.load(f)
@@ -71,15 +76,15 @@ def load() -> dict:
 
 def save(updates: dict) -> dict:
     """Validate and store user overrides (used by the UI)."""
-    current = {}
-    try:
-        current = json.loads(CONFIG_FILE.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    if not isinstance(current, dict):
+    with store.locked(CONFIG_LOCK):
         current = {}
-    current.update({k: v for k, v in updates.items() if k in DEFAULTS})
-    validate({**DEFAULTS, **current})
-    store.ensure_home()
-    store.atomic_write(CONFIG_FILE, json.dumps(current, indent=2))
+        try:
+            current = json.loads(CONFIG_FILE.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        if not isinstance(current, dict):
+            current = {}
+        current.update({k: v for k, v in updates.items() if k in DEFAULTS})
+        validate({**_defaults(), **current})
+        store.atomic_write(CONFIG_FILE, json.dumps(current, indent=2))
     return load()

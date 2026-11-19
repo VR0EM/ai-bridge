@@ -2,7 +2,12 @@ import json
 
 import pytest
 
-from ai_bridge import gemini, sandbox
+from ai_bridge import gemini, sandbox, store
+
+
+@pytest.fixture(autouse=True)
+def bridge_on():
+    store.set_enabled(True)
 
 
 def stream(status="SUCCESS", response="hi", error=None):
@@ -40,7 +45,7 @@ def test_build_args_cage_and_prompt_last(fake_agy, tmp_path):
     assert not any(a.startswith("--dangerously") for a in args)
 
 
-@pytest.mark.parametrize("model", ["claude-opus-5-5-high", "gemini-4 --x", "", "gemini-"])
+@pytest.mark.parametrize("model", ["claude-opus-5-5-high", "gemini-4 --x", "", "gemini-", "gemini-4-neon-high\n"])
 def test_bad_models_rejected(model):
     with pytest.raises(ValueError):
         gemini.check_model(model)
@@ -57,11 +62,15 @@ def test_child_env_is_an_allowlist(monkeypatch):
     assert "PATH" in env
 
 
-def test_conversation_ids_are_validated():
+@pytest.mark.parametrize("bad", ["--no-sandbox", "--settings", "-abcdefgh", "abcdef12\n", "short"])
+def test_conversation_ids_are_validated(bad, fake_agy, tmp_path):
     gemini.save_conversation("t", "abcdef12-3456")
     assert gemini.get_conversation("t") == "abcdef12-3456"
-    gemini.save_conversation("t", "--evil")
+    gemini.save_conversation("t", bad)
     assert gemini.get_conversation("t") is None
+    with pytest.raises(gemini.GeminiError):
+        gemini.build_args("q", model="gemini-4-neon-high", timeout_s=5,
+                          settings_file=tmp_path / "s.json", conversation_id=bad)
 
 
 def test_read_only_settings_deny_all_commands():
@@ -69,6 +78,7 @@ def test_read_only_settings_deny_all_commands():
     assert "command(*)" in s["permissions"]["deny"]
     assert "command(ssh)" in s["permissions"]["deny"]
     assert s["permissions"]["allow"] == []
+    assert "read_url(*)" in s["permissions"]["deny"]
     assert s["sandboxProxy"]["http"]["address"] == sandbox.BLACKHOLE_ADDRESS
 
 
@@ -97,3 +107,14 @@ def test_cancelled_ask_kills_agy(fake_agy):
     time.sleep(0.5)
     left = subprocess.run(["pgrep", "-f", "marker-xyz"], capture_output=True, text=True).stdout
     assert left.strip() == ""
+
+
+def test_bridge_off_stops_a_running_ask(fake_agy):
+    import asyncio
+    import threading
+    import time
+    threading.Timer(1.0, store.set_enabled, args=(False,)).start()
+    t = time.time()
+    with pytest.raises(store.BridgeOff):
+        asyncio.run(gemini.ask("SLEEP60 off-marker", "t", "gemini-4-neon-high", 120, []))
+    assert time.time() - t < 8
