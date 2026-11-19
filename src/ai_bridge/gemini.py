@@ -96,6 +96,8 @@ def child_env() -> dict:
     env = dict(os.environ)
     env.pop("SSH_AUTH_SOCK", None)
     env["AI_BRIDGE_DEPTH"] = str(current_depth() + 1)
+    # Anything agy starts (including its own ai-bridge MCP server) speaks as Gemini
+    env["AI_BRIDGE_AGENT"] = "gemini"
     return env
 
 

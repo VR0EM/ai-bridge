@@ -16,6 +16,15 @@ DEFAULTS = {
     "ask_timeout_s": 240,
     # How deep agents may call each other (Claude -> Gemini -> Claude ...)
     "max_depth": 2,
+    # Background jobs (gemini_task)
+    "max_parallel_jobs": 3,
+    "job_timeout_min": 20,
+    # Commands a Gemini job may never run (on top of the network lockdown)
+    "deny_commands": [
+        "qm", "pct", "pvesh", "pvecm", "pveum", "vzdump",
+        "zfs", "zpool", "ssh", "scp", "sftp", "rsync",
+        "git push", "rm -rf", "sudo",
+    ],
 }
 
 CONFIG_FILE = store.HOME / "config.json"
