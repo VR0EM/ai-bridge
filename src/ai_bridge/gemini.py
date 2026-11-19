@@ -1,32 +1,42 @@
 """Calling Gemini through the Antigravity CLI (agy), headless.
 
-- Runs in its own empty working directory per thread under ~/.ai-bridge/work/ask/.
-- Always in plan mode: Gemini may read and think, not execute.
-- No access to your SSH agent (SSH_AUTH_SOCK is removed).
-- The conversation_id is stored per thread, so a conversation continues.
+Shared by gemini_ask (synchronous) and the background workers:
+- Every run gets the cage from sandbox.py (terminal sandbox, black-hole proxy,
+  deny list) through a per-run --settings file.
+- agy gets a minimal environment (allowlist), so tokens or keys in your
+  shell environment never reach it. No SSH agent.
+- agy runs in its own process group, so a timeout or cancel kills everything it started.
 - Never --dangerously-skip-permissions.
 """
 from __future__ import annotations
 
 import asyncio
-import fcntl
+import contextlib
 import json
 import os
+import re
 import shutil
+import signal
 from pathlib import Path
 
-from . import store
+from . import config, sandbox, store
 
 WORK_DIR = store.HOME / "work" / "ask"
 THREADS_FILE = store.HOME / "threads.json"
 THREADS_LOCK = store.HOME / "threads.lock"
 
-FORBIDDEN_FLAGS = {"--dangerously-skip-permissions"}
+FORBIDDEN_FLAGS = ("--dangerously-skip-permissions",)
+CONV_RE = re.compile(r"^[A-Za-z0-9-]{8,64}$")
+MAX_PROMPT = 20000
+
+ENV_ALLOW = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM",
+             "TZ", "__CF_USER_TEXT_ENCODING"}
+ENV_ALLOW_PREFIXES = ("LC_", "XDG_")
 
 ASK_PREAMBLE = (
     "You are being consulted by Claude, the orchestrator, through the user's ai-bridge. "
     "This is a discussion: give your own insight, criticism or alternative angle. "
-    "Do not take actions and do not modify files. "
+    "Do not take actions, do not run commands and do not modify files. "
     "Answer in the language of the question, concise and concrete.\n\n"
 )
 
@@ -52,57 +62,81 @@ def current_depth() -> int:
         return 0
 
 
+def check_model(model: str) -> str:
+    if not isinstance(model, str) or not config.MODEL_RE.match(model):
+        raise ValueError("Only gemini models are allowed, e.g. gemini-4-neon-high (see: agy models).")
+    return model
+
+
+def check_prompt(text: str, what: str = "Prompt") -> str:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError(f"{what} is empty.")
+    if len(text) > MAX_PROMPT:
+        raise ValueError(f"{what} too long ({len(text)} characters, max {MAX_PROMPT}).")
+    return text
+
+
 def _load_threads() -> dict:
     try:
-        return json.loads(THREADS_FILE.read_text())
+        data = json.loads(THREADS_FILE.read_text())
+        return data if isinstance(data, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
 def get_conversation(thread: str) -> str | None:
-    return _load_threads().get(thread)
+    with store.locked(THREADS_LOCK, shared=True):
+        conv = _load_threads().get(thread)
+    return conv if isinstance(conv, str) and CONV_RE.match(conv) else None
 
 
-def save_conversation(thread: str, conversation_id: str) -> None:
-    store.ensure_home()
-    with THREADS_LOCK.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            data = _load_threads()
+def save_conversation(thread: str, conversation_id: str | None) -> None:
+    with store.locked(THREADS_LOCK):
+        data = _load_threads()
+        if conversation_id and CONV_RE.match(conversation_id):
             data[thread] = conversation_id
-            THREADS_FILE.write_text(json.dumps(data, indent=2))
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+        else:
+            data.pop(thread, None)
+        store.atomic_write(THREADS_FILE, json.dumps(data, indent=2))
 
 
-def build_args(prompt: str, model: str, timeout_s: int, conversation_id: str | None) -> list[str]:
+def child_env(depth: int | None = None) -> dict:
+    env = {k: v for k, v in os.environ.items()
+           if k in ENV_ALLOW or k.startswith(ENV_ALLOW_PREFIXES)}
+    env["AI_BRIDGE_DEPTH"] = str((current_depth() if depth is None else depth) + 1)
+    # Anything agy starts (including its own ai-bridge MCP server) speaks as Gemini
+    env["AI_BRIDGE_AGENT"] = "gemini"
+    if "AI_BRIDGE_HOME" in os.environ:
+        env["AI_BRIDGE_HOME"] = os.environ["AI_BRIDGE_HOME"]
+    return env
+
+
+def build_args(prompt: str, *, model: str, timeout_s: int, settings_file: Path,
+               mode: str = "plan", conversation_id: str | None = None) -> list[str]:
     args = [
         agy_path(),
         "--output-format", "stream-json",
-        "--mode", "plan",
-        "--model", model,
-        "--print-timeout", f"{timeout_s}s",
+        "--mode", mode,
+        "--sandbox",
+        "--settings", str(settings_file),
+        "--model", check_model(model),
+        "--print-timeout", f"{int(timeout_s)}s",
     ]
     if conversation_id:
         args += ["--conversation", conversation_id]
-    # -p must come last: it takes the next argument as the prompt
+    # -p must come last: it takes the next argument as the prompt.
+    # The prompt never starts with '-', so it cannot be mistaken for a flag.
+    if prompt.startswith("-"):
+        prompt = " " + prompt
     args += ["-p", prompt]
-    if FORBIDDEN_FLAGS & set(args):
+    if any(a.startswith(FORBIDDEN_FLAGS) for a in args[:-1]):
         raise GeminiError("Forbidden flag in agy call.")
     return args
 
 
-def child_env() -> dict:
-    env = dict(os.environ)
-    env.pop("SSH_AUTH_SOCK", None)
-    env["AI_BRIDGE_DEPTH"] = str(current_depth() + 1)
-    # Anything agy starts (including its own ai-bridge MCP server) speaks as Gemini
-    env["AI_BRIDGE_AGENT"] = "gemini"
-    return env
-
-
 def parse_stream(stdout: str) -> dict:
-    """Extract conversation_id, response and status from stream-json output."""
+    """Extract conversation_id, response, status and error from stream-json output."""
     conversation_id = None
     result = None
     for line in stdout.splitlines():
@@ -124,32 +158,58 @@ def parse_stream(stdout: str) -> dict:
         "conversation_id": conversation_id,
         "status": result.get("status"),
         "response": (result.get("response") or "").strip(),
-        "usage": result.get("usage", {}),
+        "error": result.get("error"),
+        "usage": result.get("usage") or {},
         "duration_s": result.get("duration_seconds"),
     }
 
 
-async def ask(question: str, thread: str, model: str, timeout_s: int) -> dict:
-    workdir = WORK_DIR / thread
-    workdir.mkdir(parents=True, exist_ok=True, mode=0o700)
+def outcome(parsed: dict) -> tuple[str, str | None]:
+    """Decide what a run produced: ('ok', None), ('partial', warning) or raise.
+
+    agy sometimes reports ERROR after the full answer was already streamed
+    (e.g. the connection dropped while the Mac went to sleep). An answer is
+    never thrown away: it is returned with a warning.
+    """
+    if parsed["status"] == "SUCCESS" and parsed["response"]:
+        return "ok", None
+    if parsed["response"]:
+        return "partial", f"agy reported {parsed['status']}: {parsed.get('error') or 'unknown error'}"
+    raise GeminiError(f"agy status {parsed['status']}: {parsed.get('error') or 'no answer'}")
+
+
+def kill_group(pid: int) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGKILL)
+
+
+async def ask(question: str, thread: str, model: str, timeout_s: int, deny_commands: list[str]) -> dict:
+    workdir = store.ensure_dir(WORK_DIR / thread)
+    settings_file = sandbox.write_settings(
+        WORK_DIR / f"{thread}.settings.json",
+        sandbox.agy_settings(deny_commands, read_only=True, web=True),
+    )
     conversation_id = get_conversation(thread)
-    prompt = question if conversation_id else ASK_PREAMBLE + question
-    args = build_args(prompt, model, timeout_s, conversation_id)
+    prompt = ("Follow-up question:\n" + question) if conversation_id else ASK_PREAMBLE + question
+    args = build_args(prompt, model=model, timeout_s=timeout_s,
+                      settings_file=settings_file, conversation_id=conversation_id)
 
     proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=workdir,
-        env=child_env(),
+        *args, cwd=workdir, env=child_env(),
         stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout_s + 30)
     except asyncio.TimeoutError:
-        proc.kill()
+        kill_group(proc.pid)
         await proc.wait()
         raise GeminiError(f"Gemini did not answer within {timeout_s} seconds.") from None
+    except BaseException:
+        # Cancelled by the client: never leave agy running
+        kill_group(proc.pid)
+        raise
 
     stdout = out.decode("utf-8", errors="replace")
     stderr = err.decode("utf-8", errors="replace")
@@ -159,8 +219,7 @@ async def ask(question: str, thread: str, model: str, timeout_s: int) -> dict:
         tail = (stderr or stdout).strip()[-800:]
         raise GeminiError(f"agy returned no usable answer (exit {proc.returncode}). {tail}") from None
 
-    if parsed["status"] != "SUCCESS":
-        raise GeminiError(f"agy status {parsed['status']}: {parsed['response'][:800]}")
-    if parsed["conversation_id"]:
-        save_conversation(thread, parsed["conversation_id"])
+    _, warning = outcome(parsed)
+    save_conversation(thread, parsed["conversation_id"])
+    parsed["warning"] = warning
     return parsed

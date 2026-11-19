@@ -1,7 +1,7 @@
 """Smoke test: start the MCP server as claude and as gemini and exercise the tools.
 
 Run with a temporary data dir so your real log stays clean:
-    AI_BRIDGE_HOME=$(mktemp -d) uv run python tests/smoke_test.py
+    AI_BRIDGE_HOME=$(mktemp -d) uv run python scripts/smoke_test.py
 """
 import asyncio
 import os
