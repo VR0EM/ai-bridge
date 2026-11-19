@@ -6,8 +6,8 @@ and then checks from the host what actually succeeded.
 
 The script leaks no secrets: it only writes SUCCEEDED or BLOCKED.
 
-It runs several variants of the coder settings side by side, so you can see
-which setting actually closes the network.
+It runs the coder settings with and without the black-hole proxy
+(see ai_bridge/sandbox.py), so you can see whether the network is really closed.
 
 Run:  uv run python tests/sandbox_probe.py
 """
@@ -17,7 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from ai_bridge import config, gemini, store
+from ai_bridge import config, gemini, sandbox, store
 
 HOME = Path.home()
 OUTSIDE_FILE = HOME / ".ai-bridge-sandbox-probe"
@@ -66,8 +66,7 @@ BASE = {"enableTerminalSandbox": True, "toolPermission": "proceed-in-sandbox"}
 
 VARIANTS = {
     "baseline": {**BASE, "permissions": {"deny": DENY}},
-    "deny-read_url": {**BASE, "permissions": {"deny": DENY + ["read_url(*)"]}},
-    "net-toggle-off": {**BASE, "sandboxAllowNetwork": False, "permissions": {"deny": DENY}},
+    "blackhole-proxy": {**BASE, **sandbox.no_network_settings(), "permissions": {"deny": DENY}},
 }
 
 
